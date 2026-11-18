@@ -1,0 +1,6 @@
+{
+  "name": "atomconnect-client",
+  "compatibility_date": "2025-01-01",
+  // Assets only, no Worker script: static asset requests don't run code
+  "assets": { "directory": "./public" }
+}

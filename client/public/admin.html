@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#0d9488">
+<title>AtomConnect admin</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+  /* Same surface/accent tokens as the call page; series + status colors from the dataviz reference palette */
+  :root { color-scheme: light; --bg:#f6f7f9; --surface:#fff; --surface2:#f1f3f6; --line:#dee2e8; --fg:#111827; --mute:#646e7d;
+          --accent:#0d9488; --accent-fg:#fff; --danger:#b91c1c;
+          --s1:#2a78d6; --s2:#eb6834; --grid:#e1e0d9; --axis:#c3c2b7;
+          --good:#0ca30c; --warn:#fab219; --crit:#d03b3b; --good-ink:#006300; }
+  :root[data-theme=dark] { color-scheme: dark; --bg:#0b0d11; --surface:#13161c; --surface2:#1c2028; --line:#2a303b; --fg:#e6e9ee; --mute:#949dab;
+          --accent:#2dd4bf; --accent-fg:#042f2e; --danger:#f87171; --s1:#3987e5; --s2:#d95926; --grid:#2c2c2a; --axis:#383835; --good-ink:#0ca30c; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme=light]):not([data-theme=dark]) { color-scheme: dark; --bg:#0b0d11; --surface:#13161c; --surface2:#1c2028; --line:#2a303b; --fg:#e6e9ee; --mute:#949dab;
+          --accent:#2dd4bf; --accent-fg:#042f2e; --danger:#f87171; --s1:#3987e5; --s2:#d95926; --grid:#2c2c2a; --axis:#383835; --good-ink:#0ca30c; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--fg);
+         padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  header { z-index:5; display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:10px 16px; background:var(--surface); border-bottom:1px solid var(--line); }
+  @media (min-height:600px) { header { position:sticky; top:0; } }
+  header h1 { font-size:17px; margin:0 8px 0 0; }
+  header .grow { flex:1; }
+  main { max-width:1200px; margin:0 auto; padding:16px; display:grid; gap:16px; }
+  input, button, select { font:inherit; padding:7px 11px; border-radius:8px; border:1px solid var(--line); background:var(--surface); color:var(--fg); touch-action:manipulation; }
+  input:focus-visible, button:focus-visible, select:focus-visible, tr[data-id]:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+  button { cursor:pointer; background:var(--accent); color:var(--accent-fg); border:0; font-weight:500; }
+  button.secondary { background:var(--surface2); color:var(--fg); border:1px solid var(--line); }
+  button:disabled { opacity:.5; cursor:default; }
+  .mute { color:var(--mute); }
+  .small { font-size:12px; }
+  .card { background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:14px 16px; min-width:0; }
+  .card h2 { font-size:14px; margin:0 0 10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .card h2 .grow { flex:1; }
+  .tiles { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px; }
+  .tile { background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:12px 14px; }
+  .tile .v { font-size:24px; font-weight:600; font-variant-numeric:tabular-nums; margin-top:2px; }
+  .tile .v small { font-size:12px; font-weight:400; color:var(--mute); }
+  .gauges { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(210px, 100%), 1fr)); gap:10px; }
+  .gauge { background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:12px 14px 10px; text-align:center; }
+  .gauge.warn { border-color:var(--warn); border-width:1.5px; } .gauge.crit { border-color:var(--crit); border-width:1.5px; }
+  .gauge svg { width:100%; max-width:200px; height:auto; display:block; margin:2px auto 0; }
+  .gauge .track { stroke:var(--line); } .gauge .fill { stroke:var(--s1); } .gauge.warn .fill { stroke:var(--warn); } .gauge.crit .fill { stroke:var(--crit); }
+  .gauge .pc { fill:var(--fg); font-size:20px; font-weight:600; font-family:inherit; }
+  .gauge .st { font-size:12px; font-weight:600; margin-top:2px; }
+  .alert { border:1.5px solid var(--warn); border-radius:12px; padding:10px 14px; background:var(--surface); font-weight:500; }
+  .alert.crit { border-color:var(--crit); }
+  .wrap { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums; }
+  th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { font-size:12px; font-weight:600; color:var(--mute); position:sticky; top:0; background:var(--surface); }
+  td.n, th.n { text-align:right; }
+  tr[data-id] { cursor:pointer; }
+  tr[data-id]:hover td { background:var(--surface2); }
+  tr.sel td { background:var(--surface2); }
+  .badge { display:inline-flex; gap:5px; align-items:center; padding:1px 9px 1px 7px; border-radius:99px; border:1.5px solid var(--c, var(--line)); font-size:12px; font-weight:600; }
+  .badge.good { --c:var(--good); } .badge.fair { --c:var(--warn); } .badge.poor { --c:var(--crit); }
+  .badge.na { --c:var(--line); color:var(--mute); }
+  .room { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; }
+  .pill { font-size:11px; padding:1px 7px; border-radius:99px; background:var(--surface2); border:1px solid var(--line); color:var(--mute); }
+  .err { color:var(--danger); }
+  .login { max-width:420px; margin:12vh auto; }
+  .login form { display:grid; gap:10px; }
+  .grid2 { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap:16px; }
+  .charts { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap:16px; }
+  .chart { position:relative; min-width:0; }
+  .chart h3 { font-size:13px; margin:0 0 4px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .legend { display:inline-flex; gap:12px; font-weight:400; color:var(--mute); font-size:12px; }
+  .legend i { display:inline-block; width:12px; height:3px; border-radius:2px; vertical-align:middle; margin-right:5px; }
+  .tip { position:absolute; pointer-events:none; background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:6px 9px; font-size:12px; box-shadow:0 4px 16px #0003; z-index:3; white-space:nowrap; display:none; }
+  .tip b { font-variant-numeric:tabular-nums; }
+  svg text { fill:var(--mute); font-size:11px; font-family:inherit; }
+  details summary { cursor:pointer; color:var(--mute); margin-top:12px; }
+  ol.ev { list-style:none; margin:0; padding:0; font-size:13px; }
+  ol.ev li { padding:5px 0; border-bottom:1px solid var(--line); display:flex; gap:10px; }
+  ol.ev time { color:var(--mute); width:78px; flex:none; font-variant-numeric:tabular-nums; }
+  .kv { display:flex; gap:6px 22px; flex-wrap:wrap; margin:0 0 12px; }
+  .kv div span { display:block; font-size:12px; color:var(--mute); }
+</style>
+</head>
+<body>
+<header>
+  <h1>AtomConnect admin</h1>
+  <span class="grow"></span>
+  <span class="mute small" id="updated" aria-live="polite"></span>
+  <label class="small mute" for="auto">Auto-refresh</label>
+  <select id="auto" aria-label="Auto-refresh interval"><option value="0" selected>Off</option><option value="10">10 s</option><option value="30">30 s</option></select>
+  <button id="refresh">Refresh</button>
+  <button id="signout" class="secondary" hidden>Sign out</button>
+</header>
+<main id="main"></main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} }, del: (k) => { try { localStorage.removeItem(k); } catch {} } };
+const th = store.get('theme'); if (th === 'dark' || th === 'light') document.documentElement.dataset.theme = th; // shared with the call page
+
+const SERVER = new URLSearchParams(location.search).get('server') || 'atomconnect-signaling.atomhealth.workers.dev';
+const API = (SERVER.startsWith('localhost') ? 'http://' : 'https://') + SERVER + '/admin/api/';
+
+let token = store.get('adminToken') || '', data = null, histRows = [], nextBefore = null, roomFilter = '', openId = null, detail = null, busy = false, timer = null;
+
+// ---- formatting -------------------------------------------------------------------------------
+const pad = (n) => String(n).padStart(2, '0');
+const clock = (t, sec) => { const d = new Date(t); return pad(d.getHours()) + ':' + pad(d.getMinutes()) + (sec ? ':' + pad(d.getSeconds()) : ''); };
+const when = (t) => { const d = new Date(t), today = new Date().toDateString() === d.toDateString(); return (today ? 'Today' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })) + ' ' + clock(t); };
+const dur = (ms) => { const s = Math.round(ms / 1000), h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60; return h ? `${h}h ${pad(m)}m` : m ? `${m}m ${pad(s % 60)}s` : `${s}s`; };
+const f1 = (n) => (Math.round(n * 10) / 10).toString();
+const WARN_PCT = 85, CRIT_PCT = 95; // free-tier usage: warn at 85%, critical at 95%
+const fmtPct = (p) => (p < 1 && p > 0 ? p.toFixed(1) : Math.round(p)) + '%';
+function gauge(label, val, limit, unit, note) {
+  const pct = limit ? (100 * val) / limit : 0, lvl = pct >= CRIT_PCT ? 'crit' : pct >= WARN_PCT ? 'warn' : '';
+  const msg = lvl === 'crit' ? '✕ Almost at the free limit' : lvl === 'warn' ? `⚠ Above ${WARN_PCT}% of the free limit` : '';
+  return `<div class="gauge ${lvl}" role="group" aria-label="${esc(label)}: ${fmtPct(pct)} of free limit">
+    <div class="mute small">${esc(label)}</div>
+    <svg viewBox="0 0 120 72" aria-hidden="true"><path class="track" d="M10 62 A50 50 0 0 1 110 62" fill="none" stroke-width="10" stroke-linecap="round"/>
+      <path class="fill" d="M10 62 A50 50 0 0 1 110 62" fill="none" stroke-width="10" stroke-linecap="round" pathLength="100" stroke-dasharray="${Math.min(pct, 100).toFixed(2)} 100"${pct > 0 ? '' : ' opacity="0"'}/>
+      <text class="pc" x="60" y="56" text-anchor="middle">${fmtPct(pct)}</text></svg>
+    <div class="small">${esc(val.toLocaleString())} / ${esc(limit.toLocaleString())} ${esc(unit)}</div>
+    ${msg ? `<div class="st">${msg}</div>` : ''}<div class="mute small">${esc(note)}</div></div>`;
+}
+const GRADE = { good: ['✓', 'Good'], fair: ['!', 'Fair'], poor: ['✕', 'Poor'], 'n/a': ['–', 'No data'] };
+const badge = (g) => `<span class="badge ${g === 'n/a' ? 'na' : g}"><span aria-hidden="true">${GRADE[g][0]}</span>${GRADE[g][1]}</span>`;
+const END = { left: 'Left', dropped: 'Dropped', timeout: 'Timed out', lost: 'Lost contact' };
+function device(ua) {
+  if (!ua) return '';
+  const b = /Edg\//.test(ua) ? 'Edge' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : 'Browser';
+  const o = /iPhone|iPad/.test(ua) ? 'iOS' : /Android/.test(ua) ? 'Android' : /Mac OS/.test(ua) ? 'macOS' : /Windows/.test(ua) ? 'Windows' : /Linux/.test(ua) ? 'Linux' : '';
+  return o ? `${b} · ${o}` : b;
+}
+
+// ---- API ---------------------------------------------------------------------------------------
+async function api(path) {
+  const r = await fetch(API + path, { headers: { authorization: 'Bearer ' + token }, cache: 'no-store' });
+  if (r.status === 401 || r.status === 503) { const j = await r.json().catch(() => ({})); throw Object.assign(new Error(j.error || 'unauthorized'), { auth: true }); }
+  if (!r.ok) throw new Error('server error ' + r.status);
+  return r.json();
+}
+
+async function refresh() {
+  if (busy || !token) return;
+  busy = true; $('refresh').disabled = true;
+  try {
+    const q = new URLSearchParams({ limit: '50' }); if (roomFilter) q.set('room', roomFilter);
+    data = await api('dashboard?' + q);
+    histRows = data.history.sessions; nextBefore = data.history.next_before;
+    if (openId) { try { detail = await api('sessions/' + encodeURIComponent(openId)); } catch (e) { if (e.auth) throw e; detail = null; } }
+    $('updated').textContent = 'Updated ' + clock(Date.now(), true);
+    render();
+  } catch (e) {
+    if (e.auth) { signOut(e.message); } else { $('updated').innerHTML = '<span class="err">Failed: ' + esc(e.message) + '</span>'; }
+  } finally { busy = false; $('refresh').disabled = false; }
+}
+
+async function loadMore() {
+  const b = $('more'); b.disabled = true;
+  try {
+    const q = new URLSearchParams({ limit: '50', before: String(nextBefore) }); if (roomFilter) q.set('room', roomFilter);
+    const r = await api('sessions?' + q); histRows = histRows.concat(r.sessions); nextBefore = r.next_before; render();
+  } catch (e) { $('updated').innerHTML = '<span class="err">Failed: ' + esc(e.message) + '</span>'; b.disabled = false; }
+}
+
+async function openSession(id) {
+  openId = id; detail = null; render();
+  try { detail = await api('sessions/' + encodeURIComponent(id)); } catch (e) { $('updated').innerHTML = '<span class="err">Failed: ' + esc(e.message) + '</span>'; }
+  render(); $('detail')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// ---- auto refresh: paused while the tab is hidden so a forgotten tab doesn't burn the free-tier quota -----
+function schedule() {
+  clearInterval(timer); timer = null;
+  const s = Number($('auto').value);
+  if (s) timer = setInterval(() => { if (!document.hidden) refresh(); }, s * 1000);
+}
+$('auto').onchange = schedule;
+$('refresh').onclick = refresh;
+document.addEventListener('visibilitychange', () => { if (!document.hidden && timer) refresh(); });
+function signOut(msg) { store.del('adminToken'); token = ''; data = null; openId = null; detail = null; clearInterval(timer); $('auto').value = '0'; render(msg); }
+$('signout').onclick = () => signOut();
+
+// ---- render --------------------------------------------------------------------------------------
+function render(loginMsg) {
+  const main = $('main');
+  $('signout').hidden = !token;
+  if (!token) {
+    main.innerHTML = `<div class="card login"><h2>Sign in</h2><form id="lf"><label class="mute small" for="tk">Admin token (the ADMIN_TOKEN secret)</label>
+      <input id="tk" type="password" autocomplete="off" required autofocus><button>Continue</button><div class="err small" id="lerr">${esc(loginMsg || '')}</div></form></div>`;
+    $('lf').onsubmit = (e) => { e.preventDefault(); token = $('tk').value.trim(); store.set('adminToken', token); refresh(); };
+    return;
+  }
+  if (!data) { main.innerHTML = '<div class="card mute">Loading…</div>'; return; }
+  const sm = data.summary, u = data.usage;
+  const tile = (l, v, sub = '') => `<div class="tile"><div class="mute small">${l}</div><div class="v">${v}${sub ? ` <small>${sub}</small>` : ''}</div></div>`;
+  const gs = u && u.configured && !u.error ? [
+    ['Workers requests today', u.workers_today, u.workers_limit, 'requests', 'Account-wide · resets 00:00 UTC'],
+    ['Durable Object requests today', u.do_today, u.do_limit, 'requests', 'Resets 00:00 UTC'],
+    ['TURN egress this month', u.turn_gb_month, u.turn_limit_gb, 'GB', 'Resets on the 1st (UTC)'],
+  ] : [];
+  const hot = gs.filter((g) => g[2] && (100 * g[1]) / g[2] >= WARN_PCT);
+  const usage = gs.length ? `<section aria-label="Free-tier usage"><div class="gauges">${gs.map((g) => gauge(...g)).join('')}</div></section>` : '';
+  const alert = hot.length ? `<div class="alert ${hot.some((g) => (100 * g[1]) / g[2] >= CRIT_PCT) ? 'crit' : ''}" role="alert">${hot.some((g) => (100 * g[1]) / g[2] >= CRIT_PCT) ? '✕' : '⚠'} Free-tier usage: ${hot.map((g) => `${esc(g[0])} at ${fmtPct((100 * g[1]) / g[2])}`).join(', ')}</div>` : '';
+  main.innerHTML = `
+    <section class="tiles" aria-label="Summary">
+      ${tile('Active now', data.active.length)}
+      ${tile('Sessions, 24 h', sm.sessions_24h)}
+      ${tile('Quality, 24 h', `${sm.good_24h}<small> good</small> ${sm.fair_24h}<small> fair</small> ${sm.poor_24h}<small> poor</small>`)}
+      ${tile('Avg RTT, 24 h', sm.avg_rtt_24h ? sm.avg_rtt_24h + ' ms' : '–')}
+      ${tile('Drops, 24 h', sm.drops_24h)}
+      ${tile('Reconnects, 24 h', sm.reconnects_24h)}
+    </section>
+    ${alert}${usage}
+    ${u && u.configured && u.error ? `<div class="mute small">Usage panel: ${esc(u.error)}</div>` : ''}
+    ${!u || !u.configured ? '<div class="mute small">Account usage panel is off (set the CF_API_TOKEN secret to enable it).</div>' : ''}
+    <section class="card"><h2>Active sessions <span class="pill">${data.active.length}</span></h2>${activeTable()}</section>
+    <section class="card"><h2><span>Past sessions</span><span class="grow"></span>
+      <form id="rf" style="display:flex;gap:6px"><input id="roomq" placeholder="Filter by exact room id" value="${esc(roomFilter)}" aria-label="Filter by room id" size="22" maxlength="64"><button class="secondary">Filter</button></form></h2>
+      ${histTable()}
+      <div class="mute small" style="margin-top:8px">Sessions and timelines are kept ${data.retention_days} days, then pruned daily. Quality is the average of 30 s samples reported by the call pages.</div></section>
+    ${openId ? `<section class="card" id="detail">${detailView()}</section>` : ''}`;
+  $('rf').onsubmit = (e) => { e.preventDefault(); roomFilter = $('roomq').value.trim(); refresh(); };
+  main.querySelectorAll('tr[data-id]').forEach((tr) => {
+    tr.onclick = () => openSession(tr.dataset.id);
+    tr.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openSession(tr.dataset.id); } };
+  });
+  if ($('more')) $('more').onclick = loadMore;
+  if ($('closeDetail')) $('closeDetail').onclick = () => { openId = null; detail = null; render(); };
+  if (detail) drawCharts();
+}
+
+function activeTable() {
+  if (!data.active.length) return '<div class="mute">No calls right now.</div>';
+  const rows = data.active.map((s) => {
+    const peers = s.peers.map((p) => {
+      const l = p.last;
+      return l ? `${f1(l.rtt)} ms · ${f1(l.recv ? (100 * l.lost) / (l.lost + l.recv) : 0)}% loss${l.w ? ` · ${l.w}x${l.h}` : ''}${l.relay ? ' · TURN' : ''}` : 'no sample yet';
+    });
+    return `<tr data-id="${esc(s.id)}" tabindex="0"><td class="room">${esc(s.room)}</td><td>${when(s.started_at)} <span class="mute">(${dur(data.now - s.started_at)})</span></td>
+      <td class="n">${s.peers.length}</td><td>${peers.map(esc).join('<br>') || '<span class="mute">waiting</span>'}</td>
+      <td class="n">${s.drops}</td><td class="n">${s.reconnects}</td><td>${badge(s.grade)}</td></tr>`;
+  }).join('');
+  return `<div class="wrap"><table><thead><tr><th>Room</th><th>Started</th><th class="n">Peers</th><th>Latest sample (per peer)</th><th class="n">Drops</th><th class="n">Reconnects</th><th>Quality</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function histTable() {
+  if (!histRows.length) return `<div class="mute">${roomFilter ? 'No past sessions for that room.' : 'No past sessions yet.'}</div>`;
+  const rows = histRows.map((s) => `<tr data-id="${esc(s.id)}" tabindex="0" class="${s.id === openId ? 'sel' : ''}">
+    <td>${when(s.started_at)}</td><td class="room">${esc(s.room)}</td><td class="n">${dur(s.duration_ms)}</td><td class="n">${s.peak_peers}</td>
+    <td class="n">${s.samples ? f1(s.avg_rtt) + ' ms' : '–'}</td><td class="n">${s.samples ? f1(s.max_rtt) + ' ms' : '–'}</td><td class="n">${s.samples ? f1(s.loss_pct) + '%' : '–'}</td>
+    <td class="n">${s.samples ? s.relay_pct + '%' : '–'}</td><td class="n">${s.drops}</td><td class="n">${s.reconnects}</td><td>${badge(s.grade)}</td><td class="mute">${esc(END[s.end_reason] || s.end_reason || '')}</td></tr>`).join('');
+  return `<div class="wrap"><table><thead><tr><th>Started</th><th>Room</th><th class="n">Duration</th><th class="n">Peers</th><th class="n">Avg RTT</th><th class="n">Max RTT</th><th class="n">Loss</th><th class="n">TURN</th><th class="n">Drops</th><th class="n">Reconnects</th><th>Quality</th><th>Ended</th></tr></thead><tbody>${rows}</tbody></table></div>
+    ${nextBefore ? '<div style="margin-top:10px"><button class="secondary" id="more">Load more</button></div>' : ''}`;
+}
+
+// ---- session detail ---------------------------------------------------------------------------------
+// A reconnect gets a new socket id; the server links it to the old one (prev), so one person = one series
+function who() { const m = {}; let n = 0; for (const p of detail.peers) m[p.id] = p.prev && p.prev in m ? m[p.prev] : n++; return { m, n }; }
+const pname = (i) => 'Peer ' + 'ABCDEFGH'[i % 8];
+const pcol = (i) => `var(--s${(i % 2) + 1})`;
+function evText(e, name) {
+  const d = e.detail || {}, who = name(e.peer);
+  if (e.type === 'join') return `${who} ${d.reconnect ? 'rejoined' : 'joined'}${d.cc ? ' from ' + esc(d.cc) : ''}${d.ua ? ' (' + esc(device(d.ua)) + ')' : ''}`;
+  if (e.type === 'leave') return `${who} ${d.drop ? `<b class="err">dropped</b> (code ${esc(d.code)}${d.reason ? ' ' + esc(d.reason) : ''})` : 'left'}`;
+  const k = { 'ice-disconnected': '<b class="err">media disconnected</b>', 'ice-failed': '<b class="err">media connection failed</b>', 'ice-restart': 'ICE restart' }[d.kind] || esc(d.kind);
+  return `${who}: ${k}${d.reason ? ' (' + esc(d.reason) + ')' : ''}`;
+}
+
+function detailView() {
+  if (!detail) return '<div class="mute">Loading…</div>';
+  const s = detail.session, peers = detail.peers, W = who(), idx = W.m;
+  const name = (id) => (id in idx ? pname(idx[id]) : 'Peer');
+  const ps = peers.map((p) => {
+    const x = detail.peer_summary[p.id] || {};
+    return `<tr><td><span class="legend"><i style="background:${pcol(idx[p.id])}"></i></span>${pname(idx[p.id])} <span class="mute small">${esc(p.id.slice(0, 4))}</span></td><td>${esc(device(p.ua))}</td><td>${esc(p.cc || '')}</td>
+      <td>${clock(p.joined_at, true)}</td><td>${p.left_at ? clock(p.left_at, true) : '<span class="mute">present</span>'}</td><td class="n">${x.samples ?? 0}</td>
+      <td class="n">${x.samples ? f1(x.avg_rtt) : '–'}</td><td class="n">${x.samples ? f1(x.p95_rtt) : '–'}</td><td class="n">${x.samples ? f1(x.max_rtt) : '–'}</td>
+      <td class="n">${x.samples ? f1(x.loss_pct) + '%' : '–'}</td><td class="n">${x.samples ? x.relay_pct + '%' : '–'}</td><td class="n">${x.samples ? f1(x.avg_kbps / 1000) : '–'}</td><td>${esc(x.resolution || '')}</td></tr>`;
+  }).join('');
+  const hasSamples = Object.values(detail.timelines).some((t) => t.length);
+  const legend = W.n > 1 ? `<span class="legend">${Array.from({ length: W.n }, (_, i) => `<span><i style="background:${pcol(i)}"></i>${pname(i)}</span>`).join('')}</span>` : '';
+  const chart = (id, title) => `<div class="chart"><h3>${title} ${legend}</h3><div id="${id}"></div></div>`;
+  const rowsTbl = peers.map((p) => detail.timelines[p.id].map((x) => `<tr><td>${pname(idx[p.id])}</td><td>${clock(x.t, true)}</td><td class="n">${f1(x.rtt)}</td><td class="n">${f1(x.recv ? (100 * x.lost) / (x.lost + x.recv) : 0)}</td><td class="n">${f1(x.kbps / 1000)}</td><td class="n">${f1(x.jit)}</td><td>${x.w ? x.w + 'x' + x.h : ''}</td><td class="n">${x.fps || ''}</td><td>${x.relay ? 'TURN' : 'direct'}</td><td>${esc(x.ice)}</td></tr>`).join('')).join('');
+  return `
+    <h2><span>Session <span class="room">${esc(s.room)}</span></span> ${badge(s.grade)}<span class="grow"></span><button class="secondary" id="closeDetail">Close</button></h2>
+    <div class="kv">
+      <div><span>Started</span>${when(s.started_at)}</div><div><span>Duration</span>${dur(s.duration_ms)}${s.ended_at ? '' : ' (active)'}</div>
+      <div><span>Ended</span>${s.ended_at ? esc(END[s.end_reason] || s.end_reason || '') : 'Active'}</div>
+      <div><span>Drops</span>${s.drops} <small class="mute">(${s.ws_drops} signaling, ${s.media_drops} media)</small></div>
+      <div><span>Reconnects</span>${s.reconnects} <small class="mute">(${s.ws_reconnects} signaling, ${s.ice_restarts} ICE restarts)</small></div>
+      <div><span>Avg / max RTT</span>${s.samples ? f1(s.avg_rtt) + ' / ' + f1(s.max_rtt) + ' ms' : '–'}</div><div><span>Packet loss</span>${s.samples ? f1(s.loss_pct) + '%' : '–'}</div><div><span>Via TURN</span>${s.samples ? s.relay_pct + '%' : '–'}</div>
+    </div>
+    <div class="wrap"><table><thead><tr><th>Peer</th><th>Device</th><th>Country</th><th>Joined</th><th>Left</th><th class="n">Samples</th><th class="n">Avg RTT ms</th><th class="n">p95 RTT</th><th class="n">Max RTT</th><th class="n">Loss</th><th class="n">TURN</th><th class="n">Avg uplink Mbps</th><th>Video</th></tr></thead><tbody>${ps}</tbody></table></div>
+    <div class="charts" style="margin-top:16px">${hasSamples ? chart('c-rtt', 'Round-trip time (ms)') + chart('c-loss', 'Packet loss per 30 s (%)') + chart('c-up', 'Estimated uplink (Mbps)') : '<div class="mute">No quality samples (the call was shorter than 30 s, or the pages did not report any).</div>'}</div>
+    <div class="grid2" style="margin-top:12px"><div><h2 style="margin-top:8px">Events</h2><ol class="ev">${detail.events.map((e) => `<li><time>${clock(e.ts, true)}</time><span>${evText(e, name)}</span></li>`).join('')}</ol></div></div>
+    ${hasSamples ? `<details><summary>Samples table</summary><div class="wrap"><table><thead><tr><th>Peer</th><th>Time</th><th class="n">RTT ms</th><th class="n">Loss %</th><th class="n">Uplink Mbps</th><th class="n">Jitter ms</th><th>Video</th><th class="n">fps</th><th>Route</th><th>ICE</th></tr></thead><tbody>${rowsTbl}</tbody></table></div></details>` : ''}
+    <div class="mute small" style="margin-top:10px">Samples are flushed in batches of 5 minutes, so the newest few minutes of an active call may lag.</div>`;
+}
+
+// ---- charts (inline SVG: 2 px lines, hairline grid, hover crosshair + tooltip) -------------------------
+const GAP_MS = 75000; // 2.5 x the 30 s sample interval: a longer silence breaks the line
+const niceMax = (v) => { if (v <= 0) return 1; const p = 10 ** Math.floor(Math.log10(v)), n = v / p; return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p; };
+const redraws = [];
+function drawCharts() {
+  redraws.length = 0;
+  const ps = detail.peers, tl = (p) => detail.timelines[p.id] || [];
+  const all = ps.flatMap(tl); if (!all.length) return;
+  const t0 = Math.min(detail.session.started_at, ...all.map((x) => x.t)), t1 = Math.max(detail.session.ended_at || 0, ...all.map((x) => x.t), t0 + 60000);
+  const W = who(), mk = (f) => Array.from({ length: W.n }, (_, i) => ({ name: pname(i), color: pcol(i),
+    pts: ps.filter((p) => W.m[p.id] === i).flatMap((p) => tl(p).map((x) => [x.t, f(x)])).sort((a, b) => a[0] - b[0]) }));
+  const specs = [
+    ['c-rtt', mk((x) => x.rtt), 'ms'],
+    ['c-loss', mk((x) => (x.recv ? (100 * x.lost) / (x.lost + x.recv) : 0)), '%'],
+    ['c-up', mk((x) => x.kbps / 1000), 'Mbps'],
+  ];
+  for (const [id, series, unit] of specs) if ($(id)) lineChart($(id), series, unit, t0, t1);
+}
+addEventListener('resize', () => { clearTimeout(addEventListener.t); addEventListener.t = setTimeout(() => redraws.forEach((f) => f()), 150); });
+
+function lineChart(host, series, unit, t0, t1) {
+  const draw = () => {
+    const W = Math.max(280, host.clientWidth), H = 180, m = { l: 42, r: 10, t: 8, b: 22 }, iw = W - m.l - m.r, ih = H - m.t - m.b;
+    const ymax = niceMax(Math.max(0, ...series.flatMap((s) => s.pts.map((p) => p[1])))), X = (t) => m.l + ((t - t0) / (t1 - t0)) * iw, Y = (v) => m.t + ih - (v / ymax) * ih;
+    const span = t1 - t0, xt = Array.from({ length: 5 }, (_, i) => t0 + (span * i) / 4);
+    let g = [0, 0.5, 1].map((f) => `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(ymax * f)}" y2="${Y(ymax * f)}" stroke="var(--grid)"/><text x="${m.l - 6}" y="${Y(ymax * f) + 4}" text-anchor="end">${f1(ymax * f)}</text>`).join('');
+    g += `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--axis)"/>` + xt.map((t, i) => `<text x="${X(t)}" y="${H - 6}" text-anchor="${i === 0 ? 'start' : i === 4 ? 'end' : 'middle'}">${clock(t, span < 600000)}</text>`).join('');
+    const paths = series.map((s) => {
+      const segs = []; let cur = [];
+      s.pts.forEach((p, i) => { if (i && p[0] - s.pts[i - 1][0] > GAP_MS) { segs.push(cur); cur = []; } cur.push(p); }); if (cur.length) segs.push(cur);
+      return segs.map((sg) => sg.length === 1
+        ? `<circle cx="${X(sg[0][0])}" cy="${Y(sg[0][1])}" r="3" fill="${s.color}"/>`
+        : `<path d="${sg.map((p, i) => (i ? 'L' : 'M') + X(p[0]).toFixed(1) + ' ' + Y(p[1]).toFixed(1)).join('')}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`).join('');
+    }).join('');
+    host.innerHTML = `<svg width="${W}" height="${H}" role="img" aria-label="${series.map((s) => s.name).join(' and ')} over time, unit ${unit}. Values are in the samples table."><g>${g}</g>${paths}
+      <line id="vl" y1="${m.t}" y2="${Y(0)}" stroke="var(--axis)" style="display:none"/><g id="dots"></g><rect x="${m.l}" y="${m.t}" width="${iw}" height="${ih}" fill="transparent"/></svg><div class="tip"></div>`;
+    const svg = host.firstChild, tip = host.querySelector('.tip'), vl = svg.querySelector('#vl'), dots = svg.querySelector('#dots');
+    const hide = () => { tip.style.display = 'none'; vl.style.display = 'none'; dots.innerHTML = ''; };
+    svg.addEventListener('pointerleave', hide);
+    svg.addEventListener('pointermove', (e) => {
+      const rect = svg.getBoundingClientRect(), x = e.clientX - rect.left, t = t0 + ((x - m.l) / iw) * (t1 - t0);
+      const hits = series.map((s) => { let best = null; for (const p of s.pts) if (!best || Math.abs(p[0] - t) < Math.abs(best[0] - t)) best = p; return best && Math.abs(best[0] - t) < GAP_MS / 1.5 ? { s, p: best } : null; }).filter(Boolean);
+      if (!hits.length) return hide();
+      const cx = X(hits[0].p[0]);
+      vl.setAttribute('x1', cx); vl.setAttribute('x2', cx); vl.style.display = '';
+      dots.innerHTML = hits.map((h) => `<circle cx="${X(h.p[0])}" cy="${Y(h.p[1])}" r="4.5" fill="${h.s.color}" stroke="var(--surface)" stroke-width="2"/>`).join('');
+      tip.innerHTML = `<div class="mute">${clock(hits[0].p[0], true)}</div>` + hits.map((h) => `<div><span class="legend"><i style="background:${h.s.color}"></i></span>${h.s.name}: <b>${f1(h.p[1])} ${unit}</b></div>`).join('');
+      tip.style.display = 'block';
+      const tw = tip.offsetWidth; tip.style.left = Math.min(Math.max(cx - tw / 2, 0), W - tw) + 'px'; tip.style.top = (m.t + 24) + 'px';
+    });
+  };
+  draw(); redraws.push(draw);
+}
+
+// ---- boot ------------------------------------------------------------------------------------------
+render();
+if (token) refresh();
+</script>
+</body>
+</html>

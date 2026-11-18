@@ -1,0 +1,9 @@
+node_modules/
+.wrangler/
+.dev.vars
+.env*
+logs/
+*.log
+.DS_Store
+# real deployment config (account/TURN key IDs); copy from server/wrangler.example.jsonc
+server/wrangler.jsonc

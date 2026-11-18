@@ -1,0 +1,21 @@
+{
+  "name": "atomconnect-signaling",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "ROOMS", "class_name": "Room" },
+      { "name": "REGISTRY", "class_name": "Registry" }
+    ]
+  },
+  // Set to the TURN key ID from Cloudflare dashboard > Realtime > TURN Server.
+  // The API token goes in a secret: `npx wrangler secret put TURN_API_TOKEN`
+  // Admin dashboard: `npx wrangler secret put ADMIN_TOKEN` (required, else /admin/api/* answers 503).
+  // Optional usage panel: also `npx wrangler secret put CF_API_TOKEN` (token with Account Analytics: Read).
+  "vars": { "TURN_KEY_ID": "<YOUR_TURN_KEY_ID>", "CF_ACCOUNT_ID": "<YOUR_CF_ACCOUNT_ID>" },
+  // Free plan requires SQLite-backed Durable Objects
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Room"] },
+    { "tag": "v2", "new_sqlite_classes": ["Registry"] }
+  ]
+}

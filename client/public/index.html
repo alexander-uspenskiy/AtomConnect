@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d9488">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="AtomConnect">
+<title>AtomConnect</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/favicon.svg">
+<style>
+  /* Atom surface/line tokens; teal accent so this tab is distinct from the Atom app (indigo) */
+  :root { color-scheme: light; --bg:#f6f7f9; --surface:#fff; --surface2:#f1f3f6; --line:#dee2e8; --fg:#111827; --mute:#646e7d;
+          --accent:#0d9488; --accent-fg:#fff; --danger:#b91c1c; --danger-fg:#fff; --card:var(--surface); }
+  :root[data-theme=dark] { color-scheme: dark; --bg:#0b0d11; --surface:#13161c; --surface2:#1c2028; --line:#2a303b; --fg:#e6e9ee; --mute:#949dab;
+          --accent:#2dd4bf; --accent-fg:#042f2e; --danger:#f87171; --danger-fg:#1a0505; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme=light]):not([data-theme=dark]) { color-scheme: dark; --bg:#0b0d11; --surface:#13161c; --surface2:#1c2028; --line:#2a303b; --fg:#e6e9ee; --mute:#949dab;
+          --accent:#2dd4bf; --accent-fg:#042f2e; --danger:#f87171; --danger-fg:#1a0505; } }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust:100%; }
+  body { margin:0; font:15px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--fg); height:100vh; height:100dvh; display:flex; flex-direction:column; overflow:hidden;
+         padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+         -webkit-tap-highlight-color:transparent; overscroll-behavior-y:contain; }
+  header { display:flex; gap:8px; border-bottom:1px solid var(--line); background:var(--surface); flex:none; padding:10px 16px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:17px; margin:0 8px 0 0; }
+  #ver { font-size:11px; color:var(--mute); font-weight:400; margin-left:4px; }
+  input, button { font:inherit; padding:8px 12px; border-radius:8px; border:1px solid var(--line); background:var(--surface); color:var(--fg); touch-action:manipulation; }
+  input:focus-visible, button:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+  button { cursor:pointer; background:var(--accent); color:var(--accent-fg); border:0; font-weight:500; }
+  button.secondary { background:var(--surface2); color:var(--fg); border:1px solid var(--line); }
+  button.danger { background:var(--danger); color:var(--danger-fg); }
+  button:disabled { opacity:.5; cursor:default; }
+  .stage { position:relative; flex:1; min-height:0; background:#000; overflow:hidden; }
+  #remote { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; display:block; }
+  #empty { position:absolute; inset:0; display:grid; place-items:center; text-align:center; padding:24px; color:#fff9; font-size:15px; pointer-events:none; }
+  .stage.incall #empty { display:none; }
+  #local { position:absolute; width:22%; max-width:220px; max-height:45%; object-fit:cover; border-radius:14px; border:2px solid #fff5; background:#222;
+           box-shadow:0 6px 24px #0006; touch-action:none; cursor:grab; user-select:none; -webkit-user-select:none; z-index:2; transition:left .15s, top .15s, right .15s, bottom .15s; }
+  .stage:not(.incall) #local { display:none; }
+  #local.drag { cursor:grabbing; transition:none; }
+  #local.mirror { transform:scaleX(-1); }
+  /* snap positions: row (t|b) x column (l|c|r); bottom row clears the control bar */
+  #local[data-pos^=t] { top:12px; bottom:auto; } #local[data-pos^=b] { bottom:100px; top:auto; }
+  #local[data-pos$=l] { left:12px; right:auto; } #local[data-pos$=r] { right:12px; left:auto; }
+  #local[data-pos$=c] { left:0; right:0; margin-inline:auto; }
+  #stats { position:absolute; top:12px; left:12px; z-index:3; color:#fffc; font-size:12px; font-variant-numeric:tabular-nums; background:#0006; padding:4px 10px; border-radius:999px; backdrop-filter:blur(8px); pointer-events:none; }
+  #stats:empty { display:none; }
+
+  /* Floating round control bar */
+  .controls { position:absolute; left:50%; bottom:max(18px, env(safe-area-inset-bottom)); transform:translateX(-50%); z-index:5; display:none; align-items:center; gap:12px; padding:10px 14px;
+              max-width:calc(100% - 16px); border-radius:999px; background:rgba(18,20,26,.55); border:1px solid #fff2; backdrop-filter:blur(16px) saturate(1.4); -webkit-backdrop-filter:blur(16px) saturate(1.4);
+              box-shadow:0 10px 30px #0006; transition:opacity .25s, transform .25s; }
+  .stage.incall .controls { display:flex; }
+  .stage.idle .controls { opacity:0; pointer-events:none; transform:translate(-50%, 12px); }
+  .rbtn { position:relative; width:52px; height:52px; flex:none; padding:0; border-radius:50%; display:grid; place-items:center; background:#ffffff22; color:#fff; border:1px solid #fff2;
+          transition:background .15s, transform .1s; }
+  .rbtn:hover { background:#ffffff3a; } .rbtn:active { transform:scale(.92); }
+  .rbtn svg { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+  .rbtn .alt { display:none; } .rbtn.off .alt { display:block; } .rbtn.off .main { display:none; }
+  .rbtn.off { background:#fff; color:#111; border-color:transparent; }
+  .rbtn.on { background:var(--accent); color:var(--accent-fg); border-color:transparent; }
+  .rbtn.leave { width:68px; border-radius:26px; background:var(--danger); color:var(--danger-fg); border-color:transparent; }
+  .rbtn.leave:hover { filter:brightness(1.1); }
+  .rbtn .dot { display:none; position:absolute; top:2px; right:2px; width:14px; height:14px; border-radius:50%; background:#22c55e; border:2px solid #14161c; box-shadow:0 0 0 0 #22c55e99; animation:ping 1.6s infinite; }
+  .rbtn.has-new .dot { display:block; }
+  @keyframes ping { 70% { box-shadow:0 0 0 8px #22c55e00; } 100% { box-shadow:0 0 0 0 #22c55e00; } }
+
+  /* Chat: hidden by default, slides in over the video */
+  .chat { position:absolute; z-index:6; top:12px; right:12px; bottom:100px; width:340px; max-width:calc(100% - 24px); display:flex; flex-direction:column; gap:8px; padding:12px;
+          border-radius:22px; background:color-mix(in srgb, var(--surface) 86%, transparent); backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px);
+          border:1px solid var(--line); box-shadow:0 16px 50px #0006;
+          visibility:hidden; opacity:0; transform:translateX(24px) scale(.98); transition:opacity .2s, transform .2s, visibility 0s .2s; }
+  .chat.open { visibility:visible; opacity:1; transform:none; transition-delay:0s; }
+  .chat .ch { display:flex; align-items:center; justify-content:space-between; font-weight:600; font-size:14px; padding:2px 4px; }
+  .chat .ch button { width:30px; height:30px; padding:0; border-radius:50%; background:var(--surface2); color:var(--mute); font-size:18px; line-height:1; border:0; }
+  #log { flex:1; min-height:0; overflow:auto; display:flex; flex-direction:column; gap:6px; padding:2px 2px; -webkit-overflow-scrolling:touch; }
+  #log p { margin:0; max-width:85%; padding:7px 12px; border-radius:16px; background:var(--surface2); word-break:break-word; align-self:flex-start; }
+  #log .me { align-self:flex-end; background:var(--accent); color:var(--accent-fg); }
+  #log .sys { align-self:center; max-width:100%; background:none; color:var(--mute); font-size:12px; padding:2px; text-align:center; }
+  form#chat { display:flex; gap:6px; } form#chat input { flex:1; min-width:0; border-radius:999px; padding:9px 14px; }
+  form#chat button { border-radius:999px; }
+  #update { flex:none; display:none; background:var(--accent); color:var(--accent-fg); padding:8px 16px; font-size:14px; align-items:center; gap:12px; justify-content:space-between; }
+  #update button { background:var(--accent-fg); color:var(--accent); padding:4px 10px; }
+  header { position:relative; }
+  #settings { display:none; position:absolute; z-index:20; top:calc(100% + 8px); right:16px; width:340px; padding:6px;
+              background:var(--surface); border:1px solid var(--line); border-radius:16px; box-shadow:0 12px 40px #0004, 0 2px 6px #0002; }
+  #settings .sh { display:flex; align-items:center; justify-content:space-between; padding:8px 10px 6px; font-weight:600; font-size:14px; }
+  #settings .sh button { padding:2px 8px; min-height:0; background:transparent; color:var(--mute); font-size:20px; line-height:1; }
+  #settings .row { display:grid; grid-template-columns:32px 1fr; gap:2px 10px; align-items:center; padding:10px; border-radius:12px; }
+  #settings .row:hover { background:var(--surface2); }
+  #settings .ic { grid-row:span 2; width:32px; height:32px; border-radius:9px; display:grid; place-items:center;
+                  background:color-mix(in srgb, var(--accent) 15%, transparent); color:var(--accent); }
+  #settings .ic svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+  #settings .lbl { font-size:11px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; color:var(--mute); }
+  #settings select { appearance:none; -webkit-appearance:none; width:100%; font:inherit; font-size:14px; padding:6px 28px 6px 0; border:0; border-bottom:1px solid var(--line); border-radius:0; background:transparent; color:var(--fg);
+                     background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E");
+                     background-repeat:no-repeat; background-position:right 4px center; text-overflow:ellipsis; cursor:pointer; }
+  #settings select:focus { outline:none; border-bottom-color:var(--accent); }
+  #settings select option { background:var(--surface); color:var(--fg); }
+  #settings .foot { padding:8px 12px 6px; font-size:11px; color:var(--mute); }
+  @media (hover:hover) and (pointer:fine) and (min-width:801px) { #settings.open { display:block; } }
+  .desktop-only { display:none; }
+  @media (hover:hover) and (pointer:fine) and (min-width:801px) { .desktop-only { display:inline-block; } }
+
+  /* Mobile / touch */
+  @media (max-width:800px) {
+    header { padding:10px; gap:6px; }
+    header h1 { flex:1 0 100%; margin:0; }
+    #room { flex:1; min-width:0; }
+    #status { flex:1 0 100%; }
+    .controls { gap:8px; padding:8px 10px; }
+    .rbtn { width:46px; height:46px; } .rbtn.leave { width:60px; }
+    #fsBtn { display:none; }
+    #local { width:28%; max-width:140px; }
+    #local[data-pos^=b] { bottom:90px; }
+    .chat { left:8px; right:8px; top:auto; bottom:88px; width:auto; max-width:none; height:min(60%, 420px); }
+  }
+  /* Touch targets + no iOS focus-zoom (inputs must be >=16px) */
+  @media (pointer:coarse) {
+    input, button { min-height:44px; font-size:16px; }
+    header button { flex:1 1 auto; }
+    .rbtn { min-height:0; } .chat .ch button { min-height:0; }
+  }
+  @media (max-height:480px) { .chat { top:8px; bottom:76px; height:auto; } #local[data-pos^=b] { bottom:80px; } }
+</style>
+</head>
+<body>
+<div id="update"><span>New version available</span><button id="reload">Reload</button></div>
+<header>
+  <h1><img src="/favicon.svg" alt="" width="22" height="22" style="vertical-align:-4px;margin-right:6px">AtomConnect<span id="ver"></span></h1>
+  <input id="room" placeholder="room id" size="14" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="go">
+  <button id="join">Join</button>
+  <button id="theme" class="secondary" title="Theme: system / dark / light">Theme: System</button>
+  <button id="settingsBtn" class="secondary desktop-only" title="Camera, microphone and speaker">Settings</button>
+  <span id="status" class="sys">idle</span>
+  <span id="timer" class="sys" title="Call duration"></span>
+  <div id="settings" role="dialog" aria-label="Settings">
+    <div class="sh"><span>Devices</span><button id="settingsClose" aria-label="Close">&times;</button></div>
+    <label class="row"><span class="ic"><svg viewBox="0 0 24 24"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg></span><span class="lbl">Camera</span><select id="selCam"></select></label>
+    <label class="row"><span class="ic"><svg viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0014 0v-1M12 18v4"/></svg></span><span class="lbl">Microphone</span><select id="selMic"></select></label>
+    <label class="row" id="spkWrap"><span class="ic"><svg viewBox="0 0 24 24"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 010 7M19 5a10 10 0 010 14"/></svg></span><span class="lbl">Speaker</span><select id="selSpk"></select></label>
+    <div class="foot">Changes apply instantly, also during a call.</div>
+  </div>
+</header>
+
+<div class="stage" id="stage">
+  <video id="remote" autoplay playsinline></video>
+  <div id="empty">Enter a room id and press Join.<br>Share the same room id with the other person.</div>
+  <video id="local" data-pos="br" autoplay playsinline muted></video>
+  <div id="stats"></div>
+
+  <aside class="chat" id="chatPanel" aria-label="Chat" aria-hidden="true">
+    <div class="ch"><span>Chat</span><button id="chatClose" aria-label="Close chat">&times;</button></div>
+    <div id="log"></div>
+    <form id="chat"><input id="msg" placeholder="Message" autocomplete="off" enterkeyhint="send" disabled><button disabled>Send</button></form>
+  </aside>
+
+  <div class="controls" id="controls">
+    <button class="rbtn" id="mute" title="Mute" aria-label="Mute"><svg class="main" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0014 0v-1M12 18v4"/></svg><svg class="alt" viewBox="0 0 24 24"><path d="M1 1l22 22M9 9v2a3 3 0 005.1 2.1M15 9.3V5a3 3 0 00-5.9-.7M17 16.9A7 7 0 015 11v-1M19 10v1a7 7 0 01-.1 1.2M12 18v4"/></svg></button>
+    <button class="rbtn" id="cam" title="Camera" aria-label="Camera"><svg class="main" viewBox="0 0 24 24"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg><svg class="alt" viewBox="0 0 24 24"><path d="M16 16v1a2 2 0 01-2 2H3a2 2 0 01-2-2V7a2 2 0 012-2h2m5.7 0H14a2 2 0 012 2v3.3l1 1L23 7v10M1 1l22 22"/></svg></button>
+    <button class="rbtn" id="mirror" title="Mirror your self view" aria-label="Mirror self view"><svg viewBox="0 0 24 24"><path d="M12 3v18M8 7L3 12l5 5V7zM16 7l5 5-5 5V7z"/></svg></button>
+    <button class="rbtn" id="chatBtn" title="Chat" aria-label="Chat"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2v10z"/></svg><span class="dot"></span></button>
+    <button class="rbtn" id="fsBtn" title="Fullscreen" aria-label="Fullscreen"><svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 00-2 2v3M21 8V5a2 2 0 00-2-2h-3M3 16v3a2 2 0 002 2h3M16 21h3a2 2 0 002-2v-3"/></svg></button>
+    <button class="rbtn leave" id="leave" title="Leave" aria-label="Leave call" disabled><svg viewBox="0 0 24 24"><path transform="rotate(135 12 12)" d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/></svg></button>
+  </div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+// Version: bump on each release. Deployed copy also served as /version.json
+// ({"version": "..."}) so open tabs can detect a newer deploy.
+const VERSION = '0.9.7';
+const BUILD = '2026-11-18';
+$('ver').textContent = ' v' + VERSION;
+$('ver').title = `build ${BUILD}`;
+console.info('AtomConnect client v' + VERSION);
+async function checkVersion() {
+  try {
+    const r = await fetch('/version.json', { cache: 'no-store' }); if (!r.ok) return;
+    const { version } = await r.json();
+    if (version && version !== VERSION) $('update').style.display = 'flex';
+  } catch {}
+}
+$('reload').onclick = () => location.reload();
+checkVersion(); setInterval(checkVersion, 5 * 60e3);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { checkVersion(); if (stream && !wakeLock) keepAwake(); } });
+
+// Keep screen on during a call (mobile)
+let wakeLock = null;
+async function keepAwake() { try { if ('wakeLock' in navigator) { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.onrelease = () => wakeLock = null; } } catch {} }
+function releaseAwake() { try { wakeLock && wakeLock.release(); } catch {} wakeLock = null; }
+
+// Signaling server (override with ?server=host)
+const SERVER = new URLSearchParams(location.search).get('server') || 'atomconnect-signaling.atomhealth.workers.dev';
+const SCHEME = SERVER.startsWith('localhost') ? ['http', 'ws'] : ['https', 'wss'];
+const log = (t, cls = '') => { const p = document.createElement('p'); p.className = cls; p.textContent = t; $('log').append(p); $('log').scrollTop = 1e9; };
+const setStatus = (t) => $('status').textContent = t;
+
+let ws, pc, dc, stream, statsTimer, remoteViewport = null, myId = null, peerId = null;
+// Telemetry counters reported to the admin dashboard (see reportStats)
+let iceRestarts = 0, wsReconnects = 0, reportTimer = null, prevPk = { lost: 0, recv: 0 };
+
+$('room').value = location.hash.slice(1) || Math.random().toString(36).slice(2, 8);
+
+async function join() {
+  const room = $('room').value.trim();
+  if (!/^[\w-]{1,64}$/.test(room)) return alert('room: letters, digits, - or _');
+  location.hash = room;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints(), video: videoConstraints() });
+  } catch (e) { log(`Camera/mic error: ${e.name}: ${e.message}. Close other apps using the camera, check the lock icon, reload and retry.`, 'sys'); return setStatus('idle (camera/mic failed)'); }
+  $('local').srcObject = stream; keepAwake(); refreshDevices();
+  const ice = await fetchIce();
+  iceRestarts = 0; wsReconnects = 0;
+  pc = null; connectWs(room, ice, 0);
+}
+// Signaling socket with automatic reconnect: a dropped socket keeps the camera/mic and rejoins the room
+function connectWs(room, ice, attempt) {
+  const sock = new WebSocket(`${SCHEME[1]}://${SERVER}/ws?room=${encodeURIComponent(room)}${myId ? '&prev=' + encodeURIComponent(myId) : ''}`);
+  ws = sock;
+  sock.onopen = () => { if (attempt) { wsReconnects++; log('reconnected to server', 'sys'); } setStatus('connected to server, waiting for peer'); setUi(true); setInterval_ping(); };
+  sock.onerror = () => log('WebSocket error (blocked by an extension/network, or server unreachable)', 'sys');
+  sock.onclose = (e) => {
+    if (ws !== sock) return; // we left on purpose (or a newer socket replaced this one)
+    log(`Server closed connection (code ${e.code} ${e.reason || ''}). ${e.code === 1006 ? 'Never connected or dropped.' : ''}`, 'sys');
+    // Media doesn't need signaling: keep a working call up while we rejoin; only tear down a dead one
+    if (pc && pc.connectionState === 'connected') log('signaling lost, call continues while reconnecting', 'sys'); else closePc();
+    peerId = null;
+    if (stream && attempt < 8) {
+      const wait = Math.min(1000 * 2 ** attempt, 8000);
+      setStatus(`server disconnected, reconnecting (${attempt + 1}/8)...`);
+      setTimeout(async () => { if (ws === sock && stream) connectWs(room, await fetchIce().catch(() => ice), attempt + 1); }, wait);
+    } else { leave(true); setStatus('server disconnected'); }
+  };
+  sock.onmessage = (e) => onSignal(JSON.parse(e.data), ice);
+}
+// One ping timer only: a reconnect used to add another, and old timers kept pinging through the new socket
+let pingTimer = null;
+function setInterval_ping() { clearInterval(pingTimer); pingTimer = setInterval(() => { if (!ws || ws.readyState !== 1) return clearInterval(pingTimer); ws.send('{"type":"ping"}'); }, 30000); }
+
+const send = (m) => ws && ws.readyState === 1 && ws.send(JSON.stringify(m));
+
+async function onSignal(m, ice) {
+  switch (m.type) {
+    case 'welcome': myId = m.id; if (m.peers.length) { peerId = m.peers[0]; if (pc && pc.connectionState === 'connected') { log('rejoined, call still up', 'sys'); break; } setStatus('peer present, waiting for offer'); newPc(ice, false); } break;
+    case 'peer-joined': peerId = m.id; if (pc && pc.connectionState === 'connected') { log('peer rejoined signaling, call still up', 'sys'); break; } log('peer joined', 'sys'); newPc(ice, true); await makeOffer(); break;
+    case 'peer-left': if (m.id !== peerId) break; if (pc && pc.connectionState === 'connected') { log('peer signaling dropped, call still up', 'sys'); peerId = null; break; } log('peer left', 'sys'); setStatus('peer left, waiting'); closePc(); peerId = null; break;
+    case 'restart-request': log('peer asked for ICE restart', 'sys'); restartIce('peer request'); break;
+    case 'offer':
+      if (!pc || m.fresh) { log(m.fresh ? 'peer rebuilt the connection' : 'new offer', 'sys'); newPc(m.fresh ? await fetchIce() : ice, false); }
+      await pc.setRemoteDescription(m); await pc.setLocalDescription(); send({ type: 'answer', sdp: pc.localDescription.sdp, to: m.from }); break;
+    case 'answer': if (pc) await pc.setRemoteDescription({ type: 'answer', sdp: m.sdp }); break;
+    case 'ice': if (pc && m.candidate) try { await pc.addIceCandidate(m.candidate); } catch (e) { console.warn(e); } break;
+  }
+}
+
+// Test flag: open the page with ?relay=1 to force all media through TURN (no direct/STUN paths)
+const RELAY_ONLY = new URLSearchParams(location.search).get('relay') === '1';
+// Fetch fresh ICE servers (TURN credentials are short-lived, so refetch on every restart)
+async function fetchIce() {
+  const cfg = await (await fetch(`${SCHEME[0]}://${SERVER}/ice`, { cache: 'no-store' })).json();
+  if (RELAY_ONLY) { cfg.iceTransportPolicy = 'relay'; log('relay-only test mode: all traffic goes through TURN', 'sys'); }
+  return cfg;
+}
+let isInitiator = false, restartTimer = null, restarting = false, attempts = 0, watchdog = null;
+async function restartIce(reason) {
+  // Only the offerer sends offers (no glare); the answerer asks it to via signaling
+  if (!pc || !peerId) return;
+  if (!isInitiator) { send({ type: 'restart-request', to: peerId }); log(`asked peer to restart ICE (${reason})`, 'sys'); return; }
+  if (restarting) return;
+  restarting = true;
+  clearTimeout(watchdog);
+  iceRestarts++; send({ type: 'media-event', kind: 'ice-restart', reason: String(reason).slice(0, 40) });
+  try {
+    attempts++;
+    log(`restarting ICE (${reason}), attempt ${attempts}`, 'sys');
+    if (attempts > 3) { // restarts are not helping: rebuild the whole peer connection
+      const cfg = await fetchIce(); newPc(cfg, true); await makeOffer(true); attempts = 0;
+    } else {
+      pc.setConfiguration(await fetchIce());
+      pc.restartIce();
+      await makeOffer();
+    }
+    // if still not connected in 10s, try again
+    const cur = pc; watchdog = setTimeout(() => { if (pc === cur && pc.connectionState !== 'connected') restartIce('no recovery after 10s'); }, 10000);
+  } catch (e) { log('ICE restart failed: ' + e.message, 'sys'); }
+  finally { restarting = false; }
+}
+
+function newPc(ice, initiator) {
+  closePc();
+  isInitiator = initiator;
+  pc = new RTCPeerConnection(ice); prevPk = { lost: 0, recv: 0 };
+  stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+  pc.onicecandidate = (e) => e.candidate && send({ type: 'ice', candidate: e.candidate, to: peerId });
+  pc.ontrack = (e) => { $('remote').srcObject = e.streams[0]; };
+  pc.onconnectionstatechange = () => {
+    route = ''; showCallStatus();
+    clearTimeout(restartTimer);
+    log(`[${new Date().toLocaleTimeString()}] connection ${pc.connectionState} (ice ${pc.iceConnectionState})`, 'sys');
+    if (pc.connectionState === 'connected') { clearTimeout(watchdog); attempts = 0; startStats(); startTimer(); }
+    // 'disconnected' often self-heals; give it 4s before forcing a restart
+    if (pc.connectionState === 'disconnected') { send({ type: 'media-event', kind: 'ice-disconnected' }); restartTimer = setTimeout(() => restartIce('disconnected'), 4000); }
+    if (pc.connectionState === 'failed') send({ type: 'media-event', kind: 'ice-failed' });
+    if (pc.connectionState === 'failed') { log('connection failed, retrying with fresh TURN credentials', 'sys'); restartIce('failed'); }
+  };
+  if (initiator) setupChannel(pc.createDataChannel('chat'));
+  else pc.ondatachannel = (e) => setupChannel(e.channel);
+}
+async function makeOffer(fresh) { await pc.setLocalDescription(); send({ type: 'offer', sdp: pc.localDescription.sdp, to: peerId, ...(fresh && { fresh: true }) }); }
+
+function setupChannel(ch) {
+  dc = ch;
+  dc.onopen = () => { $('msg').disabled = false; $('chat').querySelector('button').disabled = false; reportViewport(); };
+  dc.onclose = () => { $('msg').disabled = true; $('chat').querySelector('button').disabled = true; };
+  dc.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'chat') { log(m.text, 'peer'); if (!chatOpen()) $('chatBtn').classList.add('has-new'); }
+    if (m.type === 'viewport') { remoteViewport = m; adapt(); }
+  };
+}
+// Adaptive: tell the peer our rendered video size so they can downscale
+function reportViewport() {
+  if (!dc || dc.readyState !== 'open') return;
+  const v = $('remote');
+  dc.send(JSON.stringify({ type: 'viewport', width: v.clientWidth, height: v.clientHeight, dpr: devicePixelRatio }));
+}
+addEventListener('resize', () => reportViewport());
+addEventListener('orientationchange', () => setTimeout(reportViewport, 300));
+
+let sendBitrate = 0;
+// Which path the media takes: relay = TURN, srflx/prflx = direct via STUN-discovered address, host = same network
+let route = '';
+const showCallStatus = () => pc && setStatus('call: ' + pc.connectionState + (route ? ' · ' + route : ''));
+function routeOf(stats) {
+  let pair;
+  stats.forEach((r) => { if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated) pair = r; });
+  if (!pair) return '';
+  const l = stats.get(pair.localCandidateId), r = stats.get(pair.remoteCandidateId);
+  const types = [l && l.candidateType, r && r.candidateType];
+  if (types.includes('relay')) return 'TURN relay' + (l && l.relayProtocol ? ' (' + l.relayProtocol + ')' : '');
+  if (types.includes('srflx') || types.includes('prflx')) return 'STUN direct';
+  if (types.includes('host')) return 'direct (LAN)';
+  return '';
+}
+// Quality telemetry for the admin dashboard: one sample every 30s over the signaling socket.
+// Loss/recv are per-interval deltas; the server stores samples, they never go to the other peer.
+const REPORT_MS = 30000;
+async function reportStats() {
+  if (!pc || pc.connectionState !== 'connected') return;
+  const s = await pc.getStats(); let rtt = 0, kbps = 0, lost = 0, recv = 0, jit = 0, w = 0, h = 0, fps = 0;
+  s.forEach((r) => {
+    if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated) { rtt = (r.currentRoundTripTime || 0) * 1000; kbps = (r.availableOutgoingBitrate || 0) / 1000; }
+    if (r.type === 'inbound-rtp') {
+      lost += r.packetsLost || 0; recv += r.packetsReceived || 0;
+      if (r.kind === 'audio') jit = (r.jitter || 0) * 1000;
+      if (r.kind === 'video') { w = r.frameWidth || 0; h = r.frameHeight || 0; fps = r.framesPerSecond || 0; }
+    }
+  });
+  const dLost = Math.max(0, lost - prevPk.lost), dRecv = Math.max(0, recv - prevPk.recv);
+  prevPk = { lost, recv };
+  send({ type: 'stats', rtt, kbps, lost: dLost, recv: dRecv, jit, w, h, fps, relay: routeOf(s).startsWith('TURN') ? 1 : 0, ice: pc.iceConnectionState, ir: iceRestarts, wsr: wsReconnects });
+}
+function startStats() {
+  clearInterval(reportTimer); reportTimer = setInterval(() => reportStats().catch(() => {}), REPORT_MS);
+  clearInterval(statsTimer);
+  statsTimer = setInterval(async () => {
+    if (!pc) return;
+    const s = await pc.getStats(); let rtt = 0, avail = 0, out = 0, inb = 0, lost = 0, res = '', relay = false;
+    s.forEach((r) => {
+      if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated) { rtt = r.currentRoundTripTime * 1000 || 0; avail = r.availableOutgoingBitrate || 0; }
+      if (r.type === 'outbound-rtp' && r.kind === 'video') out = r.bytesSent;
+      if (r.type === 'inbound-rtp' && r.kind === 'video') { inb = r.bytesReceived; lost = r.packetsLost; res = `${r.frameWidth || '?'}x${r.frameHeight || '?'}`; }
+    });
+    sendBitrate = avail;
+    const rt = routeOf(s); if (rt !== route) { route = rt; showCallStatus(); }
+    $('stats').textContent = `RTT ${rtt.toFixed(0)} ms · est. uplink ${(avail / 1e6).toFixed(2)} Mbps · rx ${res} · lost ${lost}`;
+    adapt();
+  }, 2000);
+}
+// Bandwidth + screen-size adaptation via RTCRtpSender.setParameters
+async function adapt() {
+  if (!pc) return;
+  const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video'); if (!sender) return;
+  const p = sender.getParameters(); if (!p.encodings || !p.encodings.length) return;
+  let scale = 1;
+  if (remoteViewport) {
+    const need = remoteViewport.width * (remoteViewport.dpr || 1);
+    const w = sender.track.getSettings().width || 1280;
+    scale = Math.min(4, Math.max(1, w / Math.max(need, 320)));
+  }
+  const max = sendBitrate ? Math.min(2_500_000, Math.max(150_000, sendBitrate * 0.85)) : 2_500_000;
+  const e = p.encodings[0];
+  if (Math.abs((e.scaleResolutionDownBy || 1) - scale) > 0.2 || Math.abs((e.maxBitrate || 0) - max) > max * 0.2) {
+    e.scaleResolutionDownBy = scale; e.maxBitrate = max;
+    try { await sender.setParameters(p); } catch (err) { console.warn(err); }
+  }
+}
+
+// Call duration in the header: starts at first connect, survives ICE restarts, stops when the call ends
+let callStart = 0, callTimer = null;
+function startTimer() {
+  if (callTimer) return;
+  callStart = Date.now();
+  const tick = () => {
+    const t = Math.floor((Date.now() - callStart) / 1000), h = Math.floor(t / 3600);
+    const mm = String(Math.floor(t / 60) % 60).padStart(2, '0'), ss = String(t % 60).padStart(2, '0');
+    $('timer').textContent = '⏱ ' + (h ? h + ':' : '') + mm + ':' + ss;
+  };
+  tick(); callTimer = setInterval(tick, 1000);
+}
+function stopTimer() { clearInterval(callTimer); callTimer = null; $('timer').textContent = ''; }
+function closePc() { stopTimer(); clearInterval(statsTimer); clearInterval(reportTimer); if (pc) { pc.close(); pc = null; } dc = null; $('remote').srcObject = null; $('stats').textContent = ''; }
+function leave(fromClose) {
+  const w = ws; ws = null; if (w && !fromClose) w.close(); else if (w) try { w.close(); } catch {}
+  closePc(); if (stream) stream.getTracks().forEach((t) => t.stop()); stream = null; $('local').srcObject = null; releaseAwake();
+  setUi(false); setStatus('idle');
+}
+function setUi(inCall) {
+  $('join').disabled = inCall; $('room').disabled = inCall; $('leave').disabled = !inCall; $('stage').classList.toggle('incall', inCall);
+  if (!inCall) { $('mute').classList.remove('off'); $('cam').classList.remove('off'); setChat(false); $('chatBtn').classList.remove('has-new'); }
+  wake();
+}
+
+// Self view: drag to snap to top/bottom x left/center/right; mirror toggle (both remembered)
+const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+const lv = $('local');
+const setPos = (p) => { lv.dataset.pos = p; store.set('selfPos', p); };
+if (/^[tb][lcr]$/.test(store.get('selfPos') || '')) lv.dataset.pos = store.get('selfPos');
+const setMirror = (on) => { lv.classList.toggle('mirror', on); $('mirror').classList.toggle('on', on); $('mirror').title = on ? 'Unmirror self view' : 'Mirror self view'; store.set('selfMirror', on ? '1' : '0'); };
+setMirror(store.get('selfMirror') === '1');
+$('mirror').onclick = () => setMirror(!lv.classList.contains('mirror'));
+let dragOff = null;
+lv.addEventListener('pointerdown', (e) => {
+  const c = lv.parentElement.getBoundingClientRect(), r = lv.getBoundingClientRect();
+  dragOff = { x: e.clientX - r.left, y: e.clientY - r.top, w: r.width, h: r.height };
+  lv.setPointerCapture(e.pointerId); lv.classList.add('drag');
+  Object.assign(lv.style, { left: r.left - c.left + 'px', top: r.top - c.top + 'px', right: 'auto', bottom: 'auto', marginInline: '0' });
+  e.preventDefault();
+});
+lv.addEventListener('pointermove', (e) => {
+  if (!dragOff) return;
+  const c = lv.parentElement.getBoundingClientRect();
+  const x = Math.min(Math.max(e.clientX - c.left - dragOff.x, 0), c.width - dragOff.w);
+  const y = Math.min(Math.max(e.clientY - c.top - dragOff.y, 0), c.height - dragOff.h);
+  lv.style.left = x + 'px'; lv.style.top = y + 'px';
+});
+const endDrag = () => {
+  if (!dragOff) return;
+  const c = lv.parentElement.getBoundingClientRect(), r = lv.getBoundingClientRect();
+  const cx = (r.left + r.width / 2 - c.left) / c.width, cy = (r.top + r.height / 2 - c.top) / c.height;
+  const pos = (cy < 0.5 ? 't' : 'b') + (cx < 1 / 3 ? 'l' : cx < 2 / 3 ? 'c' : 'r');
+  dragOff = null; lv.classList.remove('drag');
+  lv.style.left = lv.style.top = lv.style.right = lv.style.bottom = lv.style.marginInline = '';
+  setPos(pos);
+};
+lv.addEventListener('pointerup', endDrag); lv.addEventListener('pointercancel', endDrag);
+
+// Theme: system / dark / light (remembered)
+const THEMES = ['system', 'dark', 'light'];
+const applyTheme = (t) => {
+  if (t === 'system') document.documentElement.removeAttribute('data-theme'); else document.documentElement.dataset.theme = t;
+  $('theme').textContent = 'Theme: ' + t[0].toUpperCase() + t.slice(1); store.set('theme', t);
+  document.querySelector('meta[name=theme-color]').content = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#0d9488';
+};
+applyTheme(THEMES.includes(store.get('theme')) ? store.get('theme') : 'system');
+$('theme').onclick = () => applyTheme(THEMES[(THEMES.indexOf(store.get('theme')) + 1) % 3]);
+
+// Device settings (desktop): camera, microphone, speaker
+const audioConstraints = () => { const id = store.get('micId'); return { echoCancellation: true, noiseSuppression: true, autoGainControl: true, ...(id && { deviceId: { exact: id } }) }; };
+const videoConstraints = () => { const id = store.get('camId'); return { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, ...(id && { deviceId: { exact: id } }) }; };
+$('settingsBtn').onclick = (e) => { e.stopPropagation(); $('settings').classList.toggle('open'); refreshDevices(); };
+$('settingsClose').onclick = () => $('settings').classList.remove('open');
+document.addEventListener('click', (e) => { if (!$('settings').contains(e.target)) $('settings').classList.remove('open'); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('settings').classList.remove('open'); });
+async function refreshDevices() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+  const devs = await navigator.mediaDevices.enumerateDevices();
+  const fill = (sel, kind, key, fallback) => {
+    const list = devs.filter((d) => d.kind === kind), saved = store.get(key);
+    sel.replaceChildren(new Option('System default', ''), ...list.filter((d) => d.deviceId && d.deviceId !== 'default').map((d, i) => new Option(d.label || `${fallback} ${i + 1}`, d.deviceId)));
+    sel.value = list.some((d) => d.deviceId === saved) ? saved : '';
+  };
+  fill($('selCam'), 'videoinput', 'camId', 'Camera'); fill($('selMic'), 'audioinput', 'micId', 'Microphone'); fill($('selSpk'), 'audiooutput', 'spkId', 'Speaker');
+}
+if (navigator.mediaDevices) navigator.mediaDevices.addEventListener?.('devicechange', refreshDevices);
+refreshDevices();
+if (!('setSinkId' in HTMLMediaElement.prototype)) $('spkWrap').style.display = 'none';
+
+async function switchInput(kind, deviceId) {
+  store.set(kind === 'video' ? 'camId' : 'micId', deviceId);
+  if (!stream) return;
+  try {
+    const ns = await navigator.mediaDevices.getUserMedia(kind === 'video' ? { video: videoConstraints() } : { audio: audioConstraints() });
+    const nt = ns.getTracks()[0], old = stream.getTracks().find((t) => t.kind === kind);
+    if (old) { nt.enabled = old.enabled; stream.removeTrack(old); old.stop(); }
+    stream.addTrack(nt);
+    const sender = pc && pc.getSenders().find((x) => x.track && x.track.kind === kind);
+    if (sender) await sender.replaceTrack(nt);
+    if (kind === 'video') { $('local').srcObject = null; $('local').srcObject = stream; }
+    refreshDevices();
+  } catch (e) { log(`Could not switch ${kind === 'video' ? 'camera' : 'microphone'}: ${e.name}`, 'sys'); }
+}
+$('selCam').onchange = (e) => switchInput('video', e.target.value);
+$('selMic').onchange = (e) => switchInput('audio', e.target.value);
+$('selSpk').onchange = async (e) => { store.set('spkId', e.target.value); try { await $('remote').setSinkId(e.target.value); } catch (err) { log('Could not set speaker: ' + err.name, 'sys'); } };
+$('remote').addEventListener('loadedmetadata', () => { const id = store.get('spkId'); if (id && $('remote').setSinkId) $('remote').setSinkId(id).catch(() => {}); });
+
+// Video scaling: the remote video fills the stage (object-fit: contain keeps its true aspect ratio);
+// the self view follows its stream's own aspect ratio.
+function fitVideos() {
+  const l = $('local'); l.style.aspectRatio = l.videoWidth && l.videoHeight ? `${l.videoWidth} / ${l.videoHeight}` : '';
+  reportViewport();
+}
+['loadedmetadata', 'resize', 'emptied'].forEach((ev) => { $('remote').addEventListener(ev, fitVideos); $('local').addEventListener(ev, fitVideos); });
+addEventListener('resize', fitVideos);
+
+// Chat panel (hidden by default; green dot on the button for unread peer messages)
+const chatOpen = () => $('chatPanel').classList.contains('open');
+function setChat(open) {
+  $('chatPanel').classList.toggle('open', open); $('chatPanel').setAttribute('aria-hidden', String(!open)); $('chatBtn').classList.toggle('on', open);
+  if (open) { $('chatBtn').classList.remove('has-new'); $('log').scrollTop = 1e9; if (matchMedia('(pointer:fine)').matches && !$('msg').disabled) $('msg').focus(); }
+}
+$('chatBtn').onclick = () => setChat(!chatOpen());
+$('chatClose').onclick = () => setChat(false);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setChat(false); });
+
+// Fullscreen
+const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement;
+if (!(document.fullscreenEnabled || document.webkitFullscreenEnabled)) $('fsBtn').style.display = 'none';
+$('fsBtn').onclick = () => { const st = $('stage'); if (fsEl()) (document.exitFullscreen || document.webkitExitFullscreen).call(document); else (st.requestFullscreen || st.webkitRequestFullscreen).call(st); };
+
+// Auto-hide the control bar when idle during a call
+let idleTimer;
+function wake() {
+  const st = $('stage'); st.classList.remove('idle'); clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => { if (st.classList.contains('incall') && !chatOpen() && !$('controls').matches(':hover')) st.classList.add('idle'); }, 4000);
+}
+['pointermove', 'pointerdown', 'keydown'].forEach((ev) => $('stage').addEventListener(ev, wake));
+
+$('join').onclick = join;
+$('leave').onclick = () => leave();
+$('mute').onclick = () => { const t = stream.getAudioTracks()[0]; t.enabled = !t.enabled; $('mute').classList.toggle('off', !t.enabled); $('mute').title = t.enabled ? 'Mute' : 'Unmute'; };
+$('cam').onclick = () => { const t = stream.getVideoTracks()[0]; t.enabled = !t.enabled; $('cam').classList.toggle('off', !t.enabled); $('cam').title = t.enabled ? 'Turn camera off' : 'Turn camera on'; };
+$('chat').onsubmit = (e) => { e.preventDefault(); const text = $('msg').value.trim(); if (!text || !dc || dc.readyState !== 'open') return; dc.send(JSON.stringify({ type: 'chat', text })); log(text, 'me'); $('msg').value = ''; };
+</script>
+</body>
+</html>
