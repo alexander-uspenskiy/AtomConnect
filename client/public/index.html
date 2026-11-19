@@ -170,8 +170,8 @@
 const $ = (id) => document.getElementById(id);
 // Version: bump on each release. Deployed copy also served as /version.json
 // ({"version": "..."}) so open tabs can detect a newer deploy.
-const VERSION = '0.9.7';
-const BUILD = '2026-11-18';
+const VERSION = '0.9.9';
+const BUILD = '2026-11-19';
 $('ver').textContent = ' v' + VERSION;
 $('ver').title = `build ${BUILD}`;
 console.info('AtomConnect client v' + VERSION);
@@ -199,7 +199,7 @@ const setStatus = (t) => $('status').textContent = t;
 
 let ws, pc, dc, stream, statsTimer, remoteViewport = null, myId = null, peerId = null;
 // Telemetry counters reported to the admin dashboard (see reportStats)
-let iceRestarts = 0, wsReconnects = 0, reportTimer = null, prevPk = { lost: 0, recv: 0 };
+let iceRestarts = 0, wsReconnects = 0, reportTimer = null, prevPk = { lost: 0, recv: 0, tx: 0, rx: 0 };
 
 $('room').value = location.hash.slice(1) || Math.random().toString(36).slice(2, 8);
 
@@ -217,7 +217,7 @@ async function join() {
 }
 // Signaling socket with automatic reconnect: a dropped socket keeps the camera/mic and rejoins the room
 function connectWs(room, ice, attempt) {
-  const sock = new WebSocket(`${SCHEME[1]}://${SERVER}/ws?room=${encodeURIComponent(room)}${myId ? '&prev=' + encodeURIComponent(myId) : ''}`);
+  const sock = new WebSocket(`${SCHEME[1]}://${SERVER}/ws?room=${encodeURIComponent(room)}${myId ? '&prev=' + encodeURIComponent(myId) : ''}&v=${encodeURIComponent(VERSION)}`);
   ws = sock;
   sock.onopen = () => { if (attempt) { wsReconnects++; log('reconnected to server', 'sys'); } setStatus('connected to server, waiting for peer'); setUi(true); setInterval_ping(); };
   sock.onerror = () => log('WebSocket error (blocked by an extension/network, or server unreachable)', 'sys');
@@ -246,6 +246,7 @@ async function onSignal(m, ice) {
     case 'welcome': myId = m.id; if (m.peers.length) { peerId = m.peers[0]; if (pc && pc.connectionState === 'connected') { log('rejoined, call still up', 'sys'); break; } setStatus('peer present, waiting for offer'); newPc(ice, false); } break;
     case 'peer-joined': peerId = m.id; if (pc && pc.connectionState === 'connected') { log('peer rejoined signaling, call still up', 'sys'); break; } log('peer joined', 'sys'); newPc(ice, true); await makeOffer(); break;
     case 'peer-left': if (m.id !== peerId) break; if (pc && pc.connectionState === 'connected') { log('peer signaling dropped, call still up', 'sys'); peerId = null; break; } log('peer left', 'sys'); setStatus('peer left, waiting'); closePc(); peerId = null; break;
+    case 'hangup': log('peer ended the call', 'sys'); leave(true); setStatus('peer ended the call'); break;
     case 'restart-request': log('peer asked for ICE restart', 'sys'); restartIce('peer request'); break;
     case 'offer':
       if (!pc || m.fresh) { log(m.fresh ? 'peer rebuilt the connection' : 'new offer', 'sys'); newPc(m.fresh ? await fetchIce() : ice, false); }
@@ -291,7 +292,7 @@ async function restartIce(reason) {
 function newPc(ice, initiator) {
   closePc();
   isInitiator = initiator;
-  pc = new RTCPeerConnection(ice); prevPk = { lost: 0, recv: 0 };
+  pc = new RTCPeerConnection(ice); prevPk = { lost: 0, recv: 0, tx: 0, rx: 0 };
   stream.getTracks().forEach((t) => pc.addTrack(t, stream));
   pc.onicecandidate = (e) => e.candidate && send({ type: 'ice', candidate: e.candidate, to: peerId });
   pc.ontrack = (e) => { $('remote').srcObject = e.streams[0]; };
@@ -349,18 +350,20 @@ function routeOf(stats) {
 const REPORT_MS = 30000;
 async function reportStats() {
   if (!pc || pc.connectionState !== 'connected') return;
-  const s = await pc.getStats(); let rtt = 0, kbps = 0, lost = 0, recv = 0, jit = 0, w = 0, h = 0, fps = 0;
+  const s = await pc.getStats(); let rtt = 0, kbps = 0, lost = 0, recv = 0, jit = 0, w = 0, h = 0, fps = 0, tx = 0, rx = 0;
   s.forEach((r) => {
+    if (r.type === 'outbound-rtp') tx += (r.bytesSent || 0) + (r.headerBytesSent || 0);
     if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated) { rtt = (r.currentRoundTripTime || 0) * 1000; kbps = (r.availableOutgoingBitrate || 0) / 1000; }
     if (r.type === 'inbound-rtp') {
-      lost += r.packetsLost || 0; recv += r.packetsReceived || 0;
+      lost += r.packetsLost || 0; recv += r.packetsReceived || 0; rx += (r.bytesReceived || 0) + (r.headerBytesReceived || 0);
       if (r.kind === 'audio') jit = (r.jitter || 0) * 1000;
       if (r.kind === 'video') { w = r.frameWidth || 0; h = r.frameHeight || 0; fps = r.framesPerSecond || 0; }
     }
   });
   const dLost = Math.max(0, lost - prevPk.lost), dRecv = Math.max(0, recv - prevPk.recv);
-  prevPk = { lost, recv };
-  send({ type: 'stats', rtt, kbps, lost: dLost, recv: dRecv, jit, w, h, fps, relay: routeOf(s).startsWith('TURN') ? 1 : 0, ice: pc.iceConnectionState, ir: iceRestarts, wsr: wsReconnects });
+  const dTx = Math.max(0, tx - prevPk.tx), dRx = Math.max(0, rx - prevPk.rx);
+  prevPk = { lost, recv, tx, rx };
+  send({ type: 'stats', rtt, kbps, lost: dLost, recv: dRecv, tx: dTx, rx: dRx, jit, w, h, fps, relay: routeOf(s).startsWith('TURN') ? 1 : 0, ice: pc.iceConnectionState, ir: iceRestarts, wsr: wsReconnects });
 }
 function startStats() {
   clearInterval(reportTimer); reportTimer = setInterval(() => reportStats().catch(() => {}), REPORT_MS);
@@ -413,6 +416,7 @@ function startTimer() {
 function stopTimer() { clearInterval(callTimer); callTimer = null; $('timer').textContent = ''; }
 function closePc() { stopTimer(); clearInterval(statsTimer); clearInterval(reportTimer); if (pc) { pc.close(); pc = null; } dc = null; $('remote').srcObject = null; $('stats').textContent = ''; }
 function leave(fromClose) {
+  if (!fromClose) send({ type: 'hangup' }); // the hang-up button ends the call for the counterpart too
   const w = ws; ws = null; if (w && !fromClose) w.close(); else if (w) try { w.close(); } catch {}
   closePc(); if (stream) stream.getTracks().forEach((t) => t.stop()); stream = null; $('local').srcObject = null; releaseAwake();
   setUi(false); setStatus('idle');

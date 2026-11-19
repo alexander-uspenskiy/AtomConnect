@@ -125,7 +125,8 @@ function gauge(label, val, limit, unit, note) {
 }
 const GRADE = { good: ['✓', 'Good'], fair: ['!', 'Fair'], poor: ['✕', 'Poor'], 'n/a': ['–', 'No data'] };
 const badge = (g) => `<span class="badge ${g === 'n/a' ? 'na' : g}"><span aria-hidden="true">${GRADE[g][0]}</span>${GRADE[g][1]}</span>`;
-const END = { left: 'Left', dropped: 'Dropped', timeout: 'Timed out', lost: 'Lost contact' };
+const gb = (b) => (b >= 1e7 ? (b / 1e9).toFixed(2) + ' GB' : b > 0 ? (b / 1e6).toFixed(1) + ' MB' : '–');
+const END = { hangup: 'Ended Normal', left: 'Left', dropped: 'Dropped', timeout: 'Timed out', lost: 'Lost contact' };
 function device(ua) {
   if (!ua) return '';
   const b = /Edg\//.test(ua) ? 'Edge' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : 'Browser';
@@ -250,8 +251,8 @@ function histTable() {
   const rows = histRows.map((s) => `<tr data-id="${esc(s.id)}" tabindex="0" class="${s.id === openId ? 'sel' : ''}">
     <td>${when(s.started_at)}</td><td class="room">${esc(s.room)}</td><td class="n">${dur(s.duration_ms)}</td><td class="n">${s.peak_peers}</td>
     <td class="n">${s.samples ? f1(s.avg_rtt) + ' ms' : '–'}</td><td class="n">${s.samples ? f1(s.max_rtt) + ' ms' : '–'}</td><td class="n">${s.samples ? f1(s.loss_pct) + '%' : '–'}</td>
-    <td class="n">${s.samples ? s.relay_pct + '%' : '–'}</td><td class="n">${s.drops}</td><td class="n">${s.reconnects}</td><td>${badge(s.grade)}</td><td class="mute">${esc(END[s.end_reason] || s.end_reason || '')}</td></tr>`).join('');
-  return `<div class="wrap"><table><thead><tr><th>Started</th><th>Room</th><th class="n">Duration</th><th class="n">Peers</th><th class="n">Avg RTT</th><th class="n">Max RTT</th><th class="n">Loss</th><th class="n">TURN</th><th class="n">Drops</th><th class="n">Reconnects</th><th>Quality</th><th>Ended</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <td class="n">${s.samples ? s.relay_pct + '%' : '–'}</td><td class="n">${gb(s.tx_bytes)}</td><td class="n">${s.drops}</td><td class="n">${s.reconnects}</td><td>${badge(s.grade)}</td><td class="mute">${esc(END[s.end_reason] || s.end_reason || '')}</td></tr>`).join('');
+  return `<div class="wrap"><table><thead><tr><th>Started</th><th>Room</th><th class="n">Duration</th><th class="n">Peers</th><th class="n">Avg RTT</th><th class="n">Max RTT</th><th class="n">Loss</th><th class="n">TURN</th><th class="n" title="Media bytes sent by all peers">Data</th><th class="n">Drops</th><th class="n">Reconnects</th><th>Quality</th><th>Ended</th></tr></thead><tbody>${rows}</tbody></table></div>
     ${nextBefore ? '<div style="margin-top:10px"><button class="secondary" id="more">Load more</button></div>' : ''}`;
 }
 
@@ -264,6 +265,7 @@ function evText(e, name) {
   const d = e.detail || {}, who = name(e.peer);
   if (e.type === 'join') return `${who} ${d.reconnect ? 'rejoined' : 'joined'}${d.cc ? ' from ' + esc(d.cc) : ''}${d.ua ? ' (' + esc(device(d.ua)) + ')' : ''}`;
   if (e.type === 'leave') return `${who} ${d.drop ? `<b class="err">dropped</b> (code ${esc(d.code)}${d.reason ? ' ' + esc(d.reason) : ''})` : 'left'}`;
+  if (e.type === 'hangup') return `${who} hung up`;
   const k = { 'ice-disconnected': '<b class="err">media disconnected</b>', 'ice-failed': '<b class="err">media connection failed</b>', 'ice-restart': 'ICE restart' }[d.kind] || esc(d.kind);
   return `${who}: ${k}${d.reason ? ' (' + esc(d.reason) + ')' : ''}`;
 }
@@ -274,10 +276,10 @@ function detailView() {
   const name = (id) => (id in idx ? pname(idx[id]) : 'Peer');
   const ps = peers.map((p) => {
     const x = detail.peer_summary[p.id] || {};
-    return `<tr><td><span class="legend"><i style="background:${pcol(idx[p.id])}"></i></span>${pname(idx[p.id])} <span class="mute small">${esc(p.id.slice(0, 4))}</span></td><td>${esc(device(p.ua))}</td><td>${esc(p.cc || '')}</td>
+    return `<tr><td><span class="legend"><i style="background:${pcol(idx[p.id])}"></i></span>${pname(idx[p.id])} <span class="mute small">${esc(p.id.slice(0, 4))}</span></td><td>${esc(device(p.ua))}</td><td>${p.v ? 'v' + esc(p.v) : '<span class="mute" title="Page loaded before versions were reported: reload it to get stats">old</span>'}</td><td>${esc(p.cc || '')}</td>
       <td>${clock(p.joined_at, true)}</td><td>${p.left_at ? clock(p.left_at, true) : '<span class="mute">present</span>'}</td><td class="n">${x.samples ?? 0}</td>
       <td class="n">${x.samples ? f1(x.avg_rtt) : '–'}</td><td class="n">${x.samples ? f1(x.p95_rtt) : '–'}</td><td class="n">${x.samples ? f1(x.max_rtt) : '–'}</td>
-      <td class="n">${x.samples ? f1(x.loss_pct) + '%' : '–'}</td><td class="n">${x.samples ? x.relay_pct + '%' : '–'}</td><td class="n">${x.samples ? f1(x.avg_kbps / 1000) : '–'}</td><td>${esc(x.resolution || '')}</td></tr>`;
+      <td class="n">${x.samples ? f1(x.loss_pct) + '%' : '–'}</td><td class="n">${x.samples ? x.relay_pct + '%' : '–'}</td><td class="n">${x.samples ? f1(x.avg_kbps / 1000) : '–'}</td><td class="n">${gb(x.tx_bytes)}</td><td>${esc(x.resolution || '')}</td></tr>`;
   }).join('');
   const hasSamples = Object.values(detail.timelines).some((t) => t.length);
   const legend = W.n > 1 ? `<span class="legend">${Array.from({ length: W.n }, (_, i) => `<span><i style="background:${pcol(i)}"></i>${pname(i)}</span>`).join('')}</span>` : '';
@@ -288,11 +290,12 @@ function detailView() {
     <div class="kv">
       <div><span>Started</span>${when(s.started_at)}</div><div><span>Duration</span>${dur(s.duration_ms)}${s.ended_at ? '' : ' (active)'}</div>
       <div><span>Ended</span>${s.ended_at ? esc(END[s.end_reason] || s.end_reason || '') : 'Active'}</div>
+      <div><span>Data used</span>${gb(s.tx_bytes)} <small class="mute">(media sent by all peers)</small></div>
       <div><span>Drops</span>${s.drops} <small class="mute">(${s.ws_drops} signaling, ${s.media_drops} media)</small></div>
       <div><span>Reconnects</span>${s.reconnects} <small class="mute">(${s.ws_reconnects} signaling, ${s.ice_restarts} ICE restarts)</small></div>
       <div><span>Avg / max RTT</span>${s.samples ? f1(s.avg_rtt) + ' / ' + f1(s.max_rtt) + ' ms' : '–'}</div><div><span>Packet loss</span>${s.samples ? f1(s.loss_pct) + '%' : '–'}</div><div><span>Via TURN</span>${s.samples ? s.relay_pct + '%' : '–'}</div>
     </div>
-    <div class="wrap"><table><thead><tr><th>Peer</th><th>Device</th><th>Country</th><th>Joined</th><th>Left</th><th class="n">Samples</th><th class="n">Avg RTT ms</th><th class="n">p95 RTT</th><th class="n">Max RTT</th><th class="n">Loss</th><th class="n">TURN</th><th class="n">Avg uplink Mbps</th><th>Video</th></tr></thead><tbody>${ps}</tbody></table></div>
+    <div class="wrap"><table><thead><tr><th>Peer</th><th>Device</th><th>Page</th><th>Country</th><th>Joined</th><th>Left</th><th class="n">Samples</th><th class="n">Avg RTT ms</th><th class="n">p95 RTT</th><th class="n">Max RTT</th><th class="n">Loss</th><th class="n">TURN</th><th class="n">Avg uplink Mbps</th><th class="n">Sent</th><th>Video</th></tr></thead><tbody>${ps}</tbody></table></div>
     <div class="charts" style="margin-top:16px">${hasSamples ? chart('c-rtt', 'Round-trip time (ms)') + chart('c-loss', 'Packet loss per 30 s (%)') + chart('c-up', 'Estimated uplink (Mbps)') : '<div class="mute">No quality samples (the call was shorter than 30 s, or the pages did not report any).</div>'}</div>
     <div class="grid2" style="margin-top:12px"><div><h2 style="margin-top:8px">Events</h2><ol class="ev">${detail.events.map((e) => `<li><time>${clock(e.ts, true)}</time><span>${evText(e, name)}</span></li>`).join('')}</ol></div></div>
     ${hasSamples ? `<details><summary>Samples table</summary><div class="wrap"><table><thead><tr><th>Peer</th><th>Time</th><th class="n">RTT ms</th><th class="n">Loss %</th><th class="n">Uplink Mbps</th><th class="n">Jitter ms</th><th>Video</th><th class="n">fps</th><th>Route</th><th>ICE</th></tr></thead><tbody>${rowsTbl}</tbody></table></div></details>` : ''}

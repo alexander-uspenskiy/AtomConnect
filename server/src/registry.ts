@@ -26,16 +26,17 @@ export type Sample = {
   relay: 0 | 1; // media goes through TURN
   ice: string; // iceConnectionState
   ir: number; // cumulative ICE restarts on this client
+  tx: number; rx: number; // media bytes sent / received in the interval
   wsr: number; // cumulative signaling reconnects on this client
 };
 
-type Agg = { samples: number; rtt_n: number; rtt_sum: number; rtt_max: number; lost: number; recv: number; relay_samples: number };
+type Agg = { samples: number; rtt_n: number; rtt_sum: number; rtt_max: number; lost: number; recv: number; relay_samples: number; tx_bytes: number; rx_bytes: number };
 type Row = Agg & {
   id: string; room: string; started_at: number; ended_at: number | null; end_reason: string | null;
   peak_peers: number; reconnects: number; drops: number; media_drops: number; ice_restarts: number;
 };
 type Ev = { ts: number; peer: string | null; type: string; detail: string | null };
-type PeerInfo = { id: string; joined_at: number; left_at: number | null; cc?: string; ua?: string; reconnect?: boolean; prev?: string };
+type PeerInfo = { id: string; joined_at: number; left_at: number | null; cc?: string; ua?: string; v?: string; reconnect?: boolean; prev?: string };
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS sessions(
@@ -44,7 +45,7 @@ const SCHEMA = [
     media_drops INTEGER NOT NULL DEFAULT 0, ice_restarts INTEGER NOT NULL DEFAULT 0,
     samples INTEGER NOT NULL DEFAULT 0, rtt_n INTEGER NOT NULL DEFAULT 0, rtt_sum REAL NOT NULL DEFAULT 0,
     rtt_max REAL NOT NULL DEFAULT 0, lost INTEGER NOT NULL DEFAULT 0, recv INTEGER NOT NULL DEFAULT 0,
-    relay_samples INTEGER NOT NULL DEFAULT 0)`,
+    relay_samples INTEGER NOT NULL DEFAULT 0, tx_bytes INTEGER NOT NULL DEFAULT 0, rx_bytes INTEGER NOT NULL DEFAULT 0)`,
   `CREATE INDEX IF NOT EXISTS sessions_started ON sessions(started_at)`,
   `CREATE INDEX IF NOT EXISTS sessions_room ON sessions(room, started_at)`,
   `CREATE INDEX IF NOT EXISTS sessions_open ON sessions(ended_at) WHERE ended_at IS NULL`, // "active" lookup without a table scan
@@ -67,15 +68,16 @@ function cleanSample(r: Record<string, unknown>, t: number): Sample {
     t, rtt: num(r.rtt, 60_000, 1), kbps: num(r.kbps, 1e7), lost: num(r.lost, 1e7), recv: num(r.recv, 1e9),
     jit: num(r.jit, 60_000, 1), w: num(r.w, 8192), h: num(r.h, 8192), fps: num(r.fps, 240),
     relay: r.relay ? 1 : 0, ice: typeof r.ice === "string" ? r.ice.slice(0, 16) : "", ir: num(r.ir, 1e4), wsr: num(r.wsr, 1e4),
+    tx: num(r.tx, 1e11), rx: num(r.rx, 1e11),
   };
 }
 
-const emptyAgg = (): Agg => ({ samples: 0, rtt_n: 0, rtt_sum: 0, rtt_max: 0, lost: 0, recv: 0, relay_samples: 0 });
+const emptyAgg = (): Agg => ({ samples: 0, rtt_n: 0, rtt_sum: 0, rtt_max: 0, lost: 0, recv: 0, relay_samples: 0, tx_bytes: 0, rx_bytes: 0 });
 function addSamples(a: Agg, ss: Sample[]) {
   for (const x of ss) {
     a.samples++;
     if (x.rtt > 0) { a.rtt_n++; a.rtt_sum += x.rtt; a.rtt_max = Math.max(a.rtt_max, x.rtt); }
-    a.lost += x.lost; a.recv += x.recv; a.relay_samples += x.relay;
+    a.lost += x.lost; a.recv += x.recv; a.relay_samples += x.relay; a.tx_bytes += x.tx ?? 0; a.rx_bytes += x.rx ?? 0;
   }
 }
 
@@ -106,6 +108,8 @@ function view(s: Row, now: number) {
     samples: s.samples, avg_rtt: r1(avgRtt), max_rtt: r1(s.rtt_max), loss_pct: r1(lossPct * 10) / 10,
     relay_pct: s.samples ? Math.round((100 * s.relay_samples) / s.samples) : 0,
     grade: grade(avgRtt, lossPct, reconnects, s.samples),
+    // media data moved during the call: bytes sent by all peers (each byte sent is received by the other side)
+    data_gb: Math.round(s.tx_bytes / 1e6) / 1000, tx_bytes: s.tx_bytes, rx_bytes: s.rx_bytes,
   };
 }
 
@@ -121,6 +125,10 @@ export class Registry extends DurableObject<Env> {
     this.sql = ctx.storage.sql;
     ctx.blockConcurrencyWhile(async () => {
       for (const q of SCHEMA) this.sql.exec(q);
+      // columns added after the first deploy (CREATE TABLE IF NOT EXISTS won't add them to an existing table)
+      for (const c of ["tx_bytes", "rx_bytes"]) {
+        try { this.sql.exec(`ALTER TABLE sessions ADD COLUMN ${c} INTEGER NOT NULL DEFAULT 0`); } catch { /* already present */ }
+      }
       await this.arm();
     });
   }
@@ -186,7 +194,7 @@ export class Registry extends DurableObject<Env> {
     this.sql.exec("INSERT INTO events(session_id,ts,peer,type,detail) VALUES(?,?,?,?,?)", sid, ts, peer, type, JSON.stringify(detail));
   }
 
-  peerJoined(room: string, peer: string, prev: string | null, ts: number, info: { ua?: string; cc?: string }) {
+  peerJoined(room: string, peer: string, prev: string | null, ts: number, info: { ua?: string; cc?: string; v?: string }) {
     let s = this.latest(room);
     if (s && s.ended_at === null) {
       // session already open
@@ -198,7 +206,7 @@ export class Registry extends DurableObject<Env> {
     }
     s = this.latest(room)!;
     const reconnect = !!prev && this.hasPeer(s.id, prev);
-    this.event(s.id, ts, peer, "join", { ua: info.ua, cc: info.cc, ...(reconnect && { reconnect: true, prev }) });
+    this.event(s.id, ts, peer, "join", { ua: info.ua, cc: info.cc, v: info.v, ...(reconnect && { reconnect: true, prev }) });
     if (reconnect) this.sql.exec("UPDATE sessions SET reconnects=reconnects+1 WHERE id=?", s.id);
     const n = this.present(s.id);
     if (n > s.peak_peers) this.sql.exec("UPDATE sessions SET peak_peers=? WHERE id=?", n, s.id);
@@ -214,7 +222,17 @@ export class Registry extends DurableObject<Env> {
     if (!clean) this.sql.exec("UPDATE sessions SET drops=drops+1 WHERE id=?", s.id);
     this.flush(s.id, peer);
     this.last.delete(peer);
-    if (s.ended_at === null && this.present(s.id) <= 0) this.endSession(s, ts, clean ? "left" : code === 4000 ? "timeout" : "dropped");
+    const hungUp = this.rows("SELECT 1 FROM events WHERE session_id=? AND type='hangup' LIMIT 1", s.id).length > 0;
+    if (s.ended_at === null && this.present(s.id) <= 0) this.endSession(s, ts, clean ? (hungUp ? "hangup" : "left") : code === 4000 ? "timeout" : "dropped");
+  }
+
+  // A peer pressed the hang-up button: the session counts as ended normally (not a drop or a closed tab)
+  hangup(room: string, peer: string, ts: number) {
+    const s = this.latest(room);
+    if (!s || !this.hasPeer(s.id, peer)) return;
+    this.event(s.id, ts, peer, "hangup", {});
+    this.sql.exec("UPDATE sessions SET end_reason='hangup' WHERE id=? AND end_reason='left'", s.id); // leave notice raced ahead
+    this.sumCache = null;
   }
 
   async stats(room: string, peer: string, raw: Record<string, unknown>) {
@@ -269,8 +287,8 @@ export class Registry extends DurableObject<Env> {
     const a = emptyAgg();
     addSamples(a, b);
     this.sql.exec(
-      "UPDATE sessions SET samples=samples+?, rtt_n=rtt_n+?, rtt_sum=rtt_sum+?, rtt_max=MAX(rtt_max,?), lost=lost+?, recv=recv+?, relay_samples=relay_samples+? WHERE id=?",
-      a.samples, a.rtt_n, a.rtt_sum, a.rtt_max, a.lost, a.recv, a.relay_samples, sid,
+      "UPDATE sessions SET samples=samples+?, rtt_n=rtt_n+?, rtt_sum=rtt_sum+?, rtt_max=MAX(rtt_max,?), lost=lost+?, recv=recv+?, relay_samples=relay_samples+?, tx_bytes=tx_bytes+?, rx_bytes=rx_bytes+? WHERE id=?",
+      a.samples, a.rtt_n, a.rtt_sum, a.rtt_max, a.lost, a.recv, a.relay_samples, a.tx_bytes, a.rx_bytes, sid,
     );
   }
 
@@ -299,7 +317,7 @@ export class Registry extends DurableObject<Env> {
     for (const e of this.rows<Ev>("SELECT ts,peer,type,detail FROM events WHERE session_id=? AND type IN ('join','leave') ORDER BY id", sid)) {
       if (!e.peer) continue;
       if (e.type === "join") {
-        const d = e.detail ? (JSON.parse(e.detail) as { ua?: string; cc?: string; reconnect?: boolean; prev?: string }) : {};
+        const d = e.detail ? (JSON.parse(e.detail) as { ua?: string; cc?: string; v?: string; reconnect?: boolean; prev?: string }) : {};
         map.set(e.peer, { id: e.peer, joined_at: e.ts, left_at: null, ...d });
       } else {
         const p = map.get(e.peer);
@@ -393,6 +411,7 @@ export class Registry extends DurableObject<Env> {
         relay_pct: tl.length ? Math.round((100 * tl.reduce((a, x) => a + x.relay, 0)) / tl.length) : 0,
         avg_kbps: tl.length ? Math.round(tl.reduce((a, x) => a + x.kbps, 0) / tl.length) : 0,
         resolution: lastRes ? `${lastRes.w}x${lastRes.h}` : "",
+        tx_bytes: tl.reduce((a, x) => a + (x.tx ?? 0), 0), rx_bytes: tl.reduce((a, x) => a + (x.rx ?? 0), 0),
       };
     }
     const events = this.rows<Ev>("SELECT ts,peer,type,detail FROM events WHERE session_id=? ORDER BY id", sid).map((e) => ({

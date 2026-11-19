@@ -218,6 +218,7 @@ export class Room extends DurableObject<Env> {
       this.reg().peerJoined(room, id, prev, now, {
         ua: (req.headers.get("user-agent") ?? "").slice(0, 120),
         cc: typeof req.cf?.country === "string" ? req.cf.country : undefined,
+        v: (u.searchParams.get("v") ?? "").replace(/[^\w.-]/g, "").slice(0, 16) || undefined, // page version
       }),
     );
     return new Response(null, { status: 101, webSocket: client });
@@ -243,6 +244,8 @@ export class Room extends DurableObject<Env> {
         st = now;
         this.notify(this.reg().stats(room, from, msg));
       }
+    } else if (msg.type === "hangup") {
+      this.notify(this.reg().hangup(room, from, now));
     } else if (msg.type === "media-event") {
       this.notify(this.reg().mediaEvent(room, from, String(msg.kind ?? ""), String(msg.reason ?? "")));
     }
