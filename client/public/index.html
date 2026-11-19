@@ -24,7 +24,9 @@
          padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
          -webkit-tap-highlight-color:transparent; overscroll-behavior-y:contain; }
   header { display:flex; gap:8px; border-bottom:1px solid var(--line); background:var(--surface); flex:none; padding:10px 16px; align-items:center; flex-wrap:wrap; }
-  header h1 { font-size:17px; margin:0 8px 0 0; }
+  header h1 { font-size:17px; margin:0 8px 0 0; display:flex; align-items:center; gap:6px; }
+  header h1 img { flex:none; }
+  #theme { display:inline-flex; align-items:center; gap:6px; }
   #ver { font-size:11px; color:var(--mute); font-weight:400; margin-left:4px; }
   input, button { font:inherit; padding:8px 12px; border-radius:8px; border:1px solid var(--line); background:var(--surface); color:var(--fg); touch-action:manipulation; }
   input:focus-visible, button:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
@@ -100,19 +102,42 @@
   #settings select:focus { outline:none; border-bottom-color:var(--accent); }
   #settings select option { background:var(--surface); color:var(--fg); }
   #settings .foot { padding:8px 12px 6px; font-size:11px; color:var(--mute); }
-  @media (hover:hover) and (pointer:fine) and (min-width:801px) { #settings.open { display:block; } }
+  #settings.open { display:block; }
+  #settings .sw { grid-template-columns:32px 1fr auto; cursor:pointer; padding-top:2px; margin-top:-6px; }
+  #settings .sw .ic { grid-row:auto; }
+  #settings .tg { position:relative; width:42px; height:24px; }
+  #settings .tg input { position:absolute; inset:0; width:100%; height:100%; margin:0; opacity:0; cursor:pointer; min-height:0; padding:0; z-index:1; }
+  #settings .tg i { position:absolute; inset:0; border-radius:999px; background:var(--line); transition:background .15s; }
+  #settings .tg i::after { content:""; position:absolute; top:3px; left:3px; width:18px; height:18px; border-radius:50%; background:#fff; box-shadow:0 1px 3px #0004; transition:transform .15s; }
+  #settings .tg input:checked + i { background:var(--accent); } #settings .tg input:checked + i::after { transform:translateX(18px); }
+  #settings .tg input:focus-visible + i { outline:2px solid var(--accent); outline-offset:2px; }
+  #gearBtn { display:none; }
   .desktop-only { display:none; }
   @media (hover:hover) and (pointer:fine) and (min-width:801px) { .desktop-only { display:inline-block; } }
 
   /* Mobile / touch */
   @media (max-width:800px) {
-    header { padding:10px; gap:6px; }
-    header h1 { flex:1 0 100%; margin:0; }
-    #room { flex:1; min-width:0; }
-    #status { flex:1 0 100%; }
+    /* one compact row: logo | room | Join | theme; status sits in a slim caption line */
+    header { padding:8px 12px; gap:8px; flex-wrap:wrap; row-gap:4px; }
+    header h1 { flex:none; margin:0; }
+    header h1 .brand, #ver { display:none; }
+    header h1 img { width:30px; height:30px; }
+    #room { flex:1; min-width:0; width:auto; border-radius:999px; padding:8px 14px; background:var(--surface2); border-color:transparent; }
+    #room:focus { background:var(--surface); border-color:var(--accent); outline:none; }
+    #join { border-radius:999px; padding:8px 18px; }
+    #theme { flex:none !important; width:44px; padding:0; justify-content:center; border-radius:50%; }
+    #theme .tl { display:none; }
+    /* status + timer float over the video as pills so the header stays one row */
+    #status, #timer { position:absolute; top:calc(100% + 8px); z-index:4; font-size:12px; line-height:1; padding:6px 10px; border-radius:999px; max-width:calc(100% - 100px);
+                      background:#0008; color:#fff; backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; pointer-events:none; }
+    #status { left:12px; } #timer { right:12px; font-variant-numeric:tabular-nums; } #timer:empty { display:none; }
+    #stats { top:44px; }
+    #update { padding:6px 12px; font-size:13px; }
     .controls { gap:8px; padding:8px 10px; }
     .rbtn { width:46px; height:46px; } .rbtn.leave { width:60px; }
     #fsBtn { display:none; }
+    #gearBtn { display:grid; }
+    #settings { position:fixed; left:8px; right:8px; top:auto; bottom:calc(88px + env(safe-area-inset-bottom)); width:auto; max-height:70dvh; overflow:auto; }
     #local { width:28%; max-width:140px; }
     #local[data-pos^=b] { bottom:90px; }
     .chat { left:8px; right:8px; top:auto; bottom:88px; width:auto; max-width:none; height:min(60%, 420px); }
@@ -120,7 +145,6 @@
   /* Touch targets + no iOS focus-zoom (inputs must be >=16px) */
   @media (pointer:coarse) {
     input, button { min-height:44px; font-size:16px; }
-    header button { flex:1 1 auto; }
     .rbtn { min-height:0; } .chat .ch button { min-height:0; }
   }
   @media (max-height:480px) { .chat { top:8px; bottom:76px; height:auto; } #local[data-pos^=b] { bottom:80px; } }
@@ -129,16 +153,17 @@
 <body>
 <div id="update"><span>New version available</span><button id="reload">Reload</button></div>
 <header>
-  <h1><img src="/favicon.svg" alt="" width="22" height="22" style="vertical-align:-4px;margin-right:6px">AtomConnect<span id="ver"></span></h1>
+  <h1><img src="/favicon.svg" alt="" width="22" height="22"><span class="brand">AtomConnect</span><span id="ver"></span></h1>
   <input id="room" placeholder="room id" size="14" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="go">
   <button id="join">Join</button>
-  <button id="theme" class="secondary" title="Theme: system / dark / light">Theme: System</button>
+  <button id="theme" class="secondary" title="Theme: system / dark / light" aria-label="Theme"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3v18" /><path d="M12 3a9 9 0 010 18z" fill="currentColor"/></svg><span class="tl">Theme: System</span></button>
   <button id="settingsBtn" class="secondary desktop-only" title="Camera, microphone and speaker">Settings</button>
   <span id="status" class="sys">idle</span>
   <span id="timer" class="sys" title="Call duration"></span>
   <div id="settings" role="dialog" aria-label="Settings">
     <div class="sh"><span>Devices</span><button id="settingsClose" aria-label="Close">&times;</button></div>
     <label class="row"><span class="ic"><svg viewBox="0 0 24 24"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg></span><span class="lbl">Camera</span><select id="selCam"></select></label>
+    <label class="row sw"><span class="ic"><svg viewBox="0 0 24 24"><path d="M12 3v18M8 7L3 12l5 5V7zM16 7l5 5-5 5V7z"/></svg></span><span class="lbl">Mirror self view</span><span class="tg"><input type="checkbox" id="mirror" role="switch"><i></i></span></label>
     <label class="row"><span class="ic"><svg viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0014 0v-1M12 18v4"/></svg></span><span class="lbl">Microphone</span><select id="selMic"></select></label>
     <label class="row" id="spkWrap"><span class="ic"><svg viewBox="0 0 24 24"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 010 7M19 5a10 10 0 010 14"/></svg></span><span class="lbl">Speaker</span><select id="selSpk"></select></label>
     <div class="foot">Changes apply instantly, also during a call.</div>
@@ -160,7 +185,7 @@
   <div class="controls" id="controls">
     <button class="rbtn" id="mute" title="Mute" aria-label="Mute"><svg class="main" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0014 0v-1M12 18v4"/></svg><svg class="alt" viewBox="0 0 24 24"><path d="M1 1l22 22M9 9v2a3 3 0 005.1 2.1M15 9.3V5a3 3 0 00-5.9-.7M17 16.9A7 7 0 015 11v-1M19 10v1a7 7 0 01-.1 1.2M12 18v4"/></svg></button>
     <button class="rbtn" id="cam" title="Camera" aria-label="Camera"><svg class="main" viewBox="0 0 24 24"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg><svg class="alt" viewBox="0 0 24 24"><path d="M16 16v1a2 2 0 01-2 2H3a2 2 0 01-2-2V7a2 2 0 012-2h2m5.7 0H14a2 2 0 012 2v3.3l1 1L23 7v10M1 1l22 22"/></svg></button>
-    <button class="rbtn" id="mirror" title="Mirror your self view" aria-label="Mirror self view"><svg viewBox="0 0 24 24"><path d="M12 3v18M8 7L3 12l5 5V7zM16 7l5 5-5 5V7z"/></svg></button>
+    <button class="rbtn" id="gearBtn" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg></button>
     <button class="rbtn" id="chatBtn" title="Chat" aria-label="Chat"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2v10z"/></svg><span class="dot"></span></button>
     <button class="rbtn" id="fsBtn" title="Fullscreen" aria-label="Fullscreen"><svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 00-2 2v3M21 8V5a2 2 0 00-2-2h-3M3 16v3a2 2 0 002 2h3M16 21h3a2 2 0 002-2v-3"/></svg></button>
     <button class="rbtn leave" id="leave" title="Leave" aria-label="Leave call" disabled><svg viewBox="0 0 24 24"><path transform="rotate(135 12 12)" d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/></svg></button>
@@ -170,7 +195,7 @@
 const $ = (id) => document.getElementById(id);
 // Version: bump on each release. Deployed copy also served as /version.json
 // ({"version": "..."}) so open tabs can detect a newer deploy.
-const VERSION = '0.9.9';
+const VERSION = '0.9.10';
 const BUILD = '2026-11-19';
 $('ver').textContent = ' v' + VERSION;
 $('ver').title = `build ${BUILD}`;
@@ -427,14 +452,14 @@ function setUi(inCall) {
   wake();
 }
 
-// Self view: drag to snap to top/bottom x left/center/right; mirror toggle (both remembered)
+// Self view: drag to snap to top/bottom x left/center/right; mirror toggle in Settings (default on; both remembered)
 const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
 const lv = $('local');
 const setPos = (p) => { lv.dataset.pos = p; store.set('selfPos', p); };
 if (/^[tb][lcr]$/.test(store.get('selfPos') || '')) lv.dataset.pos = store.get('selfPos');
-const setMirror = (on) => { lv.classList.toggle('mirror', on); $('mirror').classList.toggle('on', on); $('mirror').title = on ? 'Unmirror self view' : 'Mirror self view'; store.set('selfMirror', on ? '1' : '0'); };
-setMirror(store.get('selfMirror') === '1');
-$('mirror').onclick = () => setMirror(!lv.classList.contains('mirror'));
+const setMirror = (on) => { lv.classList.toggle('mirror', on); $('mirror').checked = on; store.set('selfMirror', on ? '1' : '0'); };
+setMirror(store.get('selfMirror') !== '0'); // mirrored by default
+$('mirror').onchange = (e) => setMirror(e.target.checked);
 let dragOff = null;
 lv.addEventListener('pointerdown', (e) => {
   const c = lv.parentElement.getBoundingClientRect(), r = lv.getBoundingClientRect();
@@ -465,7 +490,7 @@ lv.addEventListener('pointerup', endDrag); lv.addEventListener('pointercancel', 
 const THEMES = ['system', 'dark', 'light'];
 const applyTheme = (t) => {
   if (t === 'system') document.documentElement.removeAttribute('data-theme'); else document.documentElement.dataset.theme = t;
-  $('theme').textContent = 'Theme: ' + t[0].toUpperCase() + t.slice(1); store.set('theme', t);
+  $('theme').querySelector('.tl').textContent = 'Theme: ' + t[0].toUpperCase() + t.slice(1); store.set('theme', t);
   document.querySelector('meta[name=theme-color]').content = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#0d9488';
 };
 applyTheme(THEMES.includes(store.get('theme')) ? store.get('theme') : 'system');
@@ -474,7 +499,7 @@ $('theme').onclick = () => applyTheme(THEMES[(THEMES.indexOf(store.get('theme'))
 // Device settings (desktop): camera, microphone, speaker
 const audioConstraints = () => { const id = store.get('micId'); return { echoCancellation: true, noiseSuppression: true, autoGainControl: true, ...(id && { deviceId: { exact: id } }) }; };
 const videoConstraints = () => { const id = store.get('camId'); return { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, ...(id && { deviceId: { exact: id } }) }; };
-$('settingsBtn').onclick = (e) => { e.stopPropagation(); $('settings').classList.toggle('open'); refreshDevices(); };
+$('gearBtn').onclick = $('settingsBtn').onclick = (e) => { e.stopPropagation(); $('settings').classList.toggle('open'); refreshDevices(); };
 $('settingsClose').onclick = () => $('settings').classList.remove('open');
 document.addEventListener('click', (e) => { if (!$('settings').contains(e.target)) $('settings').classList.remove('open'); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('settings').classList.remove('open'); });
