@@ -178,6 +178,16 @@
     #local { width:28%; max-width:140px; }
     #local[data-pos^=b] { bottom:90px; }
     .chat { left:8px; right:8px; top:auto; bottom:88px; width:auto; max-width:none; height:min(60%, 420px); }
+    /* in a call: video takes the whole screen; only the status/timer pills stay */
+    body.incall { padding:0; }
+    body.incall header { position:absolute; top:max(8px, env(safe-area-inset-top)); left:0; right:0; height:0; padding:0; border:0; background:none; overflow:visible; z-index:4; }
+    body.incall header > :not(#status):not(#timer):not(#settings) { display:none; }
+    body.incall #status, body.incall #timer { top:0; }
+    body.incall #status { left:max(12px, env(safe-area-inset-left)); } body.incall #timer { right:max(12px, env(safe-area-inset-right)); }
+    body.incall #stats { top:max(44px, calc(env(safe-area-inset-top) + 36px)); }
+    body.incall #contact { display:none; }
+    body.incall .controls { bottom:max(18px, env(safe-area-inset-bottom)); }
+    body.incall #local[data-pos^=t] { top:max(44px, calc(env(safe-area-inset-top) + 40px)); }
   }
   /* Touch targets + no iOS focus-zoom (inputs must be >=16px) */
   @media (pointer:coarse) {
@@ -289,10 +299,19 @@ $('linkBtn').onclick = async () => {
   clearTimeout(linkTimer); linkTimer = setTimeout(() => el.classList.remove('show'), 6000);
 };
 
+const mobileMq = matchMedia('(max-width:800px)');
+function enterFs() { // must run inside the tap handler; iPhone Safari has no element fullscreen, there the hidden bars are the fallback
+  if (!mobileMq.matches || !isTouch) return;
+  const d = document.documentElement, f = d.requestFullscreen || d.webkitRequestFullscreen;
+  try { const r = f && f.call(d, { navigationUI: 'hide' }); r && r.catch && r.catch(() => {}); } catch {}
+  try { screen.orientation && screen.orientation.lock && screen.orientation.lock('any').catch(() => {}); } catch {}
+}
+function exitFs() { try { if (document.fullscreenElement) document.exitFullscreen(); else if (document.webkitFullscreenElement) document.webkitExitFullscreen(); } catch {} }
 async function join() {
   prepSound();
   const room = $('room').value.trim();
   if (!/^[\w-]{1,64}$/.test(room)) return alert('room: letters, digits, - or _');
+  enterFs();
   location.hash = room;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints(), video: videoConstraints() });
@@ -747,7 +766,7 @@ async function leave(fromClose) {
   setUi(false); setStatus('idle');
 }
 function setUi(inCall) {
-  $('join').disabled = inCall; $('room').disabled = inCall; $('leave').disabled = !inCall; $('stage').classList.toggle('incall', inCall);
+  $('join').disabled = inCall; $('room').disabled = inCall; $('leave').disabled = !inCall; $('stage').classList.toggle('incall', inCall); document.body.classList.toggle('incall', inCall); if (!inCall) exitFs();
   if (!inCall) { $('mute').classList.remove('off'); $('cam').classList.remove('off'); setChat(false); $('chatBtn').classList.remove('has-new'); }
   wake();
 }
