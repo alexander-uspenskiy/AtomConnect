@@ -143,6 +143,9 @@
                background:var(--surface); color:var(--fg); border:1px solid var(--line); box-shadow:0 6px 24px #0005; font-size:13px; text-align:center; word-break:break-all; }
   #linkToast.show { display:block; } #linkToast b { display:block; font-size:12px; color:var(--mute); margin-bottom:2px; }
 
+  #contact { flex:none; display:flex; justify-content:center; align-items:center; flex-wrap:wrap; gap:6px 18px; padding:10px 16px; border-top:1px solid var(--line); background:var(--surface); font-size:13px; color:var(--mute); }
+  #contact b { color:var(--fg); font-weight:600; }
+  #contact a { color:var(--accent); text-decoration:none; } #contact a:hover { text-decoration:underline; }
   /* Mobile / touch */
   @media (max-width:800px) {
     /* one compact row: logo | room | Join | theme; status sits in a slim caption line */
@@ -165,6 +168,8 @@
     .controls { gap:8px; padding:8px 10px; }
     .rbtn { width:46px; height:46px; } .rbtn.leave { width:60px; }
     #fsBtn { display:none; }
+    #contact { padding:4px 10px; gap:0 10px; font-size:11px; }
+    #contact b { display:none; }
     body.touch #flip { display:grid; }
     #gearBtn { display:grid; }
     #settings { position:fixed; left:8px; right:8px; top:auto; bottom:calc(88px + env(safe-area-inset-bottom)); width:auto; max-height:70dvh; overflow:auto; }
@@ -227,11 +232,12 @@
     <button class="rbtn leave" id="leave" title="Leave" aria-label="Leave call" disabled><svg viewBox="0 0 24 24"><path transform="rotate(135 12 12)" d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/></svg></button>
   </div>
 </div>
+<footer id="contact"><b>Alex Uspenskiy</b><a href="mailto:alexander.uspensky@gmail.com">alexander.uspensky@gmail.com</a><a href="https://github.com/alexander-uspenskiy/AtomConnect" target="_blank" rel="noopener">GitHub</a></footer>
 <script>
 const $ = (id) => document.getElementById(id);
 // Version: bump on each release. Deployed copy also served as /version.json
 // ({"version": "..."}) so open tabs can detect a newer deploy.
-const VERSION = '0.9.16';
+const VERSION = '0.9.17';
 const BUILD = '2026-11-19';
 $('ver').textContent = ' v' + VERSION;
 $('ver').title = `build ${BUILD}`;
