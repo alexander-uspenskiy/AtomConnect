@@ -60,6 +60,18 @@
   .final{text-align:center;padding:56px 24px;border-radius:28px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}
   .final h2{color:#fff}.final p{opacity:.9;margin:0 auto 24px;max-width:520px}
   .final .btn{background:#fff;color:#0f172a;border:0}
+  .diagram{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:16px}
+  .diagram svg{width:100%;height:auto;display:block}
+  .diagram .bx rect{fill:var(--surface2);stroke:var(--line);stroke-width:1.5}
+  .diagram .bx.hi rect{stroke:var(--accent);fill:var(--glow)}
+  .diagram text{fill:var(--fg);font:600 15px ui-sans-serif,system-ui,sans-serif;text-anchor:middle}
+  .diagram text.t{font-weight:400;font-size:12px;fill:var(--mute)} .diagram text.lbl{font-size:13px}
+  code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--surface2);padding:1px 6px;border-radius:6px}
+  pre{margin:0;padding:20px;border-radius:16px;background:#0b0d11;color:#e6e9ee;overflow:auto;font-size:13px;line-height:1.7;border:1px solid var(--line)}
+  pre code{background:none;padding:0;color:inherit}
+  .tbl{overflow:auto;border:1px solid var(--line);border-radius:16px;background:var(--surface)}
+  table{border-collapse:collapse;width:100%} td{padding:12px 18px;border-bottom:1px solid var(--line);font-size:15px;vertical-align:top}
+  tr:last-child td{border:0} td:first-child{font-weight:600;white-space:nowrap;width:130px;color:var(--mute)}
   footer{padding:32px 0 48px;color:var(--mute);font-size:14px}
   footer .wrap{display:flex;flex-wrap:wrap;gap:8px 22px;justify-content:space-between;border-top:1px solid var(--line);padding-top:24px}
   footer a{color:var(--accent);text-decoration:none}footer a:hover{text-decoration:underline}
@@ -70,18 +82,18 @@
 <nav><div class="wrap">
   <a class="brand" href="#top"><img src="favicon.svg" alt="">AtomConnect</a>
   <span class="sp"></span>
-  <a class="l" href="#features">Features</a><a class="l" href="#how">How it works</a><a class="l" href="https://github.com/alexander-uspenskiy/AtomConnect">GitHub</a>
-  <a class="btn p" href="https://atomconnect-client.atomhealth.workers.dev">Open app</a>
+  <a class="l" href="#features">Features</a><a class="l" href="#how">How it works</a><a class="l" href="#architecture">Architecture</a><a class="l" href="#selfhost">Self-host</a><a class="l" href="https://github.com/alexander-uspenskiy/AtomConnect">GitHub</a>
+  <a class="btn p" href="https://github.com/alexander-uspenskiy/AtomConnect/archive/refs/heads/main.zip">Download</a>
 </div></nav>
 
 <header class="hero" id="top"><div class="wrap">
   <div>
     <span class="pill">Open source · WebRTC · Cloudflare</span>
     <h1>Talk face to face, <span>peer to peer.</span></h1>
-    <p class="lead">AtomConnect is a browser messenger with HD video, voice, chat, file transfer and screen sharing. Pick a room id, share the link, and you're connected. No install, no account.</p>
+    <p class="lead">AtomConnect is a browser messenger with HD video, voice, chat, file transfer and screen sharing. Open source and self-hosted on your own Cloudflare account: you run the signaling and TURN, so your calls stay yours.</p>
     <div class="cta">
-      <a class="btn p" href="https://atomconnect-client.atomhealth.workers.dev">Start a call</a>
-      <a class="btn" href="https://github.com/alexander-uspenskiy/AtomConnect">View on GitHub</a>
+      <a class="btn p" href="https://github.com/alexander-uspenskiy/AtomConnect/archive/refs/heads/main.zip">⬇ Download from GitHub</a>
+      <a class="btn" href="https://github.com/alexander-uspenskiy/AtomConnect">View source</a>
     </div>
   </div>
   <div class="atom" aria-hidden="true">
@@ -113,12 +125,68 @@
 
 <section id="how"><div class="wrap">
   <h2>Connected in three steps</h2>
-  <p class="sub">No downloads and no sign-up.</p>
+  <p class="sub">Guests need no downloads and no sign-up.</p>
   <div class="steps">
     <div class="step"><h3>Pick a room</h3><p>Type any room id, or copy an invite link with one click.</p></div>
     <div class="step"><h3>Share the link</h3><p>The other person opens it in any modern browser, desktop or mobile.</p></div>
     <div class="step"><h3>Talk directly</h3><p>Signaling pairs you up, then media goes straight between you, with TURN as a fallback.</p></div>
   </div>
+</div></section>
+
+<section id="architecture"><div class="wrap">
+  <h2>Architecture</h2>
+  <p class="sub">A thin signaling plane on the edge, a direct media plane between browsers.</p>
+  <div class="diagram">
+    <svg viewBox="0 0 760 330" role="img" aria-label="Two browsers exchange signaling through a Cloudflare Worker and Durable Object, and media directly or via TURN">
+      <defs><marker id="ar" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0 0L8 4L0 8z" fill="var(--mute)"/></marker></defs>
+      <g class="bx"><rect x="20" y="120" width="150" height="90" rx="14"/><text x="95" y="158">Browser A</text><text x="95" y="180" class="t">RTCPeerConnection</text></g>
+      <g class="bx"><rect x="590" y="120" width="150" height="90" rx="14"/><text x="665" y="158">Browser B</text><text x="665" y="180" class="t">RTCPeerConnection</text></g>
+      <g class="bx hi"><rect x="265" y="14" width="230" height="86" rx="14"/><text x="380" y="46">Cloudflare Worker</text><text x="380" y="68" class="t">/ws signaling · /ice creds</text><text x="380" y="86" class="t">Durable Object per room</text></g>
+      <g class="bx"><rect x="265" y="240" width="230" height="70" rx="14"/><text x="380" y="270">Cloudflare Realtime TURN</text><text x="380" y="290" class="t">relay fallback (UDP/TCP/TLS)</text></g>
+      <g stroke="var(--mute)" stroke-width="2" fill="none" marker-end="url(#ar)">
+        <path d="M95 120 C95 60 200 57 265 57"/><path d="M665 120 C665 60 560 57 495 57"/>
+        <path d="M95 210 C95 275 200 275 265 275" stroke-dasharray="5 5"/><path d="M665 210 C665 275 560 275 495 275" stroke-dasharray="5 5"/>
+      </g>
+      <g stroke="var(--accent)" stroke-width="3" fill="none"><path d="M170 160 L590 160" marker-end="url(#ar)"/><path d="M590 175 L170 175" marker-end="url(#ar)"/></g>
+      <text x="380" y="148" class="lbl" fill="var(--accent)" style="fill:var(--accent)">SRTP media + SCTP data channel (DTLS)</text>
+      <text x="120" y="45" class="t">offer / answer / ICE</text><text x="640" y="45" class="t">offer / answer / ICE</text>
+    </svg>
+  </div>
+  <div class="grid" style="margin-top:20px">
+    <div class="card"><h3>Signaling</h3><p>WebSocket at <code>/ws?room=</code>. One Durable Object per room relays offer, answer and ICE, caps the room at 2 peers, keeps the session across reconnects, and ends it on hangup or after 2 minutes empty.</p></div>
+    <div class="card"><h3>NAT traversal</h3><p>ICE with STUN, plus short-lived TURN credentials minted per request at <code>/ice</code> via the Cloudflare Realtime API. Roughly 10–20% of connections need the relay.</p></div>
+    <div class="card"><h3>Adaptive quality</h3><p>Built-in congestion control (transport-cc) plus <code>RTCRtpSender.setParameters()</code>: <code>scaleResolutionDownBy</code> and <code>maxBitrate</code> follow receiver viewport and link quality.</p></div>
+    <div class="card"><h3>Data channel</h3><p>A reliable <code>RTCDataChannel</code> carries chat, chunked file transfer and viewport hints, all inside the same DTLS session.</p></div>
+    <div class="card"><h3>Session registry</h3><p>A registry Durable Object records session history and grades, exposed through a token-protected admin API and dashboard.</p></div>
+    <div class="card"><h3>Client</h3><p>A single static <code>index.html</code> with no build step, served as Workers assets, with a version check that prompts open tabs to reload.</p></div>
+  </div>
+  <h3 style="margin:36px 0 12px">At a glance</h3>
+  <div class="tbl"><table>
+    <tr><td>Transport</td><td>WebRTC, DTLS-SRTP, SCTP data channel</td></tr>
+    <tr><td>Audio</td><td>Opus with FEC and DTX, echo cancellation</td></tr>
+    <tr><td>Topology</td><td>1:1 mesh (<code>MAX_PEERS = 2</code>); group calls would need an SFU</td></tr>
+    <tr><td>Server</td><td>TypeScript on Cloudflare Workers + Durable Objects</td></tr>
+    <tr><td>Client</td><td>Vanilla JS, one static file, zero dependencies</td></tr>
+    <tr><td>Cost</td><td>Fits Cloudflare's Free plan; <code>scripts/cf-usage.sh</code> checks usage</td></tr>
+  </table></div>
+</div></section>
+
+<section id="selfhost"><div class="wrap">
+  <h2>Self-host in minutes</h2>
+  <p class="sub">Requires Node.js and a Cloudflare account. Secrets stay in Wrangler, never in the repo.</p>
+  <div class="cta" style="margin-bottom:20px">
+    <a class="btn p" href="https://github.com/alexander-uspenskiy/AtomConnect/archive/refs/heads/main.zip">⬇ Download ZIP</a>
+    <a class="btn" href="https://github.com/alexander-uspenskiy/AtomConnect">Clone on GitHub</a>
+  </div>
+  <pre><code>git clone https://github.com/alexander-uspenskiy/AtomConnect.git
+cd AtomConnect/server
+npm install
+cp wrangler.example.jsonc wrangler.jsonc   # add TURN_KEY_ID, CF_ACCOUNT_ID
+npx wrangler login
+npx wrangler secret put TURN_API_TOKEN
+npx wrangler secret put ADMIN_TOKEN
+npm run deploy                              # signaling Worker
+cd ../client &amp;&amp; npx wrangler deploy         # static client</code></pre>
 </div></section>
 
 <section><div class="wrap">
@@ -128,9 +196,9 @@
 </div></section>
 
 <section><div class="wrap"><div class="final">
-  <h2>Ready when you are</h2>
-  <p>Open the app, pick a room id and send the link. It takes about ten seconds.</p>
-  <a class="btn" href="https://atomconnect-client.atomhealth.workers.dev">Open AtomConnect</a>
+  <h2>Run your own AtomConnect</h2>
+  <p>Free, open source, and deployable in minutes on Cloudflare's Free plan.</p>
+  <a class="btn" href="https://github.com/alexander-uspenskiy/AtomConnect/archive/refs/heads/main.zip">⬇ Download from GitHub</a>
 </div></div></section>
 
 <footer><div class="wrap">
