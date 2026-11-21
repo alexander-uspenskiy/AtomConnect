@@ -124,7 +124,7 @@ function gauge(label, val, limit, unit, note) {
     ${msg ? `<div class="st">${msg}</div>` : ''}<div class="mute small">${esc(note)}</div></div>`;
 }
 const GRADE = { good: ['✓', 'Good'], fair: ['!', 'Fair'], poor: ['✕', 'Poor'], 'n/a': ['–', 'No data'], solo: ['–', 'Solo'] };
-const badge = (g) => `<span class="badge ${g === 'n/a' || g === 'solo' ? 'na' : g}"><span aria-hidden="true">${GRADE[g][0]}</span>${GRADE[g][1]}</span>`;
+const badge = (g) => { const k = GRADE[g] ? g : 'n/a'; return `<span class="badge ${k === 'n/a' || k === 'solo' ? 'na' : k}"><span aria-hidden="true">${GRADE[k][0]}</span>${GRADE[k][1]}</span>`; }; // unknown/missing grade (e.g. server newer than this page) → "No data" instead of throwing
 const gb = (b) => (b >= 1e7 ? (b / 1e9).toFixed(2) + ' GB' : b > 0 ? (b / 1e6).toFixed(1) + ' MB' : '–');
 const END = { hangup: 'Ended Normal', left: 'Left', dropped: 'Dropped', timeout: 'Timed out', lost: 'Lost contact' };
 function device(ua) {
