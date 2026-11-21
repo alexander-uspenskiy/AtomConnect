@@ -305,13 +305,13 @@ const send = (m) => { if (!ws || ws.readyState !== 1) return false; ws.send(JSON
 
 async function onSignal(m, ice) {
   switch (m.type) {
-    case 'welcome': myId = m.id; if (m.peers.length) { peerId = m.peers[0]; if (pc && pc.connectionState === 'connected') { log('rejoined, call still up', 'sys'); break; } setStatus('peer present, waiting for offer'); newPc(ice, false); } break;
-    case 'peer-joined': peerId = m.id; if (pc && pc.connectionState === 'connected') { log('peer rejoined signaling, call still up', 'sys'); break; } log('peer joined', 'sys'); newPc(ice, true); await makeOffer(); break;
+    case 'welcome': myId = m.id; if (m.peers.length) { peerId = m.peers[0]; if (pc && pc.connectionState === 'connected') { log('rejoined, call still up', 'sys'); break; } setStatus('peer present, waiting for offer'); newPc(await fetchIce().catch(() => ice), false); } break;
+    case 'peer-joined': peerId = m.id; if (pc && pc.connectionState === 'connected') { log('peer rejoined signaling, call still up', 'sys'); break; } log('peer joined', 'sys'); newPc(await fetchIce().catch(() => ice), true); await makeOffer(); break;
     case 'peer-left': if (m.id !== peerId) break; if (pc && pc.connectionState === 'connected') { log('peer signaling dropped, call still up', 'sys'); peerId = null; break; } log('peer left', 'sys'); setStatus('peer left, waiting'); closePc(); peerId = null; break;
-    case 'hangup': log('peer ended the call', 'sys'); leave(true).then(() => setStatus('peer ended the call')); break; // leave() awaits a final stats report first
+    case 'hangup': if (limitHit || (callStart && Date.now() - callStart >= (CALL_LIMIT_S - 10) * 1000)) { limitHit = true; log(LIMIT_MSG, 'sys'); leave(true).then(() => setStatus(LIMIT_MSG)); break; } log('peer ended the call', 'sys'); leave(true).then(() => setStatus('peer ended the call')); break; // leave() awaits a final stats report first
     case 'restart-request': log('peer asked for ICE restart', 'sys'); restartIce('peer request'); break;
     case 'offer':
-      if (!pc || m.fresh) { log(m.fresh ? 'peer rebuilt the connection' : 'new offer', 'sys'); newPc(m.fresh ? await fetchIce() : ice, false); }
+      if (!pc || m.fresh) { log(m.fresh ? 'peer rebuilt the connection' : 'new offer', 'sys'); newPc(await fetchIce().catch(() => ice), false); }
       await pc.setRemoteDescription(m); await pc.setLocalDescription(); send({ type: 'answer', sdp: pc.localDescription.sdp, to: m.from }); break;
     case 'answer': if (pc) await pc.setRemoteDescription({ type: 'answer', sdp: m.sdp }); break;
     case 'ice': if (pc && m.candidate) try { await pc.addIceCandidate(m.candidate); } catch (e) { console.warn(e); } break;
@@ -521,14 +521,23 @@ async function adapt() {
 }
 
 // Call duration in the header: starts at first connect, survives ICE restarts, stops when the call ends
-let callStart = 0, callTimer = null;
+let callStart = 0, callTimer = null, limitHit = false;
+const CALL_LIMIT_S = 3 * 3600; // TURN credentials last 3 h 5 min: end the call cleanly at 3 h so both sides rejoin with fresh ones
+const LIMIT_MSG = 'Call time limit (3 hours) reached. Press Join to reconnect and continue.';
+async function endByLimit() {
+  limitHit = true;
+  await leave(false); // hangs up for the other side too (its own timer fires at the same moment)
+  setStatus(LIMIT_MSG); log(LIMIT_MSG, 'sys'); alert(LIMIT_MSG);
+}
 function startTimer() {
   if (callTimer) return;
+  limitHit = false;
   callStart = Date.now();
   const tick = () => {
     const t = Math.floor((Date.now() - callStart) / 1000), h = Math.floor(t / 3600);
     const mm = String(Math.floor(t / 60) % 60).padStart(2, '0'), ss = String(t % 60).padStart(2, '0');
     $('timer').textContent = '⏱ ' + (h ? h + ':' : '') + mm + ':' + ss;
+    if (t >= CALL_LIMIT_S && !limitHit) endByLimit();
   };
   tick(); callTimer = setInterval(tick, 1000);
 }

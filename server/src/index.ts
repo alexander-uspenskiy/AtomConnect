@@ -19,7 +19,7 @@ export interface Env {
 }
 
 const MAX_PEERS = 2; // 1:1 for the PoC; raise for group calls (needs SFU later)
-const TURN_TTL_S = 3600; // credential lifetime; must outlast the longest call (ICE restarts re-fetch)
+const TURN_TTL_S = 11100; // 3 h 5 min: outlasts the clients' 3 h call limit (they end the call at 3 h)
 
 const STUN_ONLY = {
   iceServers: [{ urls: ["stun:stun.cloudflare.com:3478"] }],
