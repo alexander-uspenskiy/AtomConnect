@@ -101,6 +101,9 @@
   #log .file progress { width:100%; height:6px; accent-color:currentColor; }
   #log .file .fs { font-size:12px; opacity:.85; } #log .file a { color:inherit; font-weight:600; }
   .stage.drop::after { content:"Drop files to send"; position:absolute; inset:12px; z-index:9; display:grid; place-items:center; border:2px dashed #fff9; border-radius:20px; background:#0009; color:#fff; font-size:18px; pointer-events:none; }
+  #log .file img { max-width:100%; max-height:180px; border-radius:10px; object-fit:contain; cursor:zoom-in; background:#0002; align-self:flex-start; }
+  #lightbox { position:fixed; inset:0; z-index:60; display:grid; place-items:center; background:#000d; cursor:zoom-out; padding:16px; }
+  #lightbox img { max-width:100%; max-height:100%; object-fit:contain; border-radius:8px; }
   #local.screen { object-fit:contain; background:#000; }
   #screen { display:none; }
   #update { flex:none; display:none; background:var(--accent); color:var(--accent-fg); padding:8px 16px; font-size:14px; align-items:center; gap:12px; justify-content:space-between; }
@@ -228,7 +231,7 @@
 const $ = (id) => document.getElementById(id);
 // Version: bump on each release. Deployed copy also served as /version.json
 // ({"version": "..."}) so open tabs can detect a newer deploy.
-const VERSION = '0.9.15';
+const VERSION = '0.9.16';
 const BUILD = '2026-11-19';
 $('ver').textContent = ' v' + VERSION;
 $('ver').title = `build ${BUILD}`;
@@ -438,8 +441,21 @@ function fileItem(cls, name, size) {
   const bar = document.createElement('progress'); bar.max = size; bar.value = 0;
   const st = document.createElement('span'); st.className = 'fs';
   p.append(t, bar, st); $('log').append(p); $('log').scrollTop = 1e9;
-  return { bar, st };
+  return { p, bar, st };
 }
+// Inline previews for common raster formats (SVG left out on purpose); click opens a full-size view
+const IMG_TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', avif: 'image/avif', bmp: 'image/bmp' };
+const imgType = (name) => IMG_TYPES[(String(name).split('.').pop() || '').toLowerCase()];
+function addPreview(ui, name, src) {
+  const img = document.createElement('img'); img.alt = name; img.src = src; img.onerror = () => img.remove(); // not decodable: keep the plain file item
+  img.onload = () => { $('log').scrollTop = 1e9; };
+  img.onclick = () => {
+    const box = document.createElement('div'); box.id = 'lightbox'; box.setAttribute('role', 'dialog'); box.setAttribute('aria-label', name);
+    const big = document.createElement('img'); big.src = src; big.alt = name; box.append(big); box.onclick = () => box.remove(); document.body.append(box);
+  };
+  ui.p.insertBefore(img, ui.bar);
+}
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') document.getElementById('lightbox')?.remove(); });
 const fileFail = (ui, why) => { ui.bar.remove(); ui.st.textContent = 'failed: ' + why; };
 function sendFile(file) {
   if (!dc || dc.readyState !== 'open') return log('Not connected to a peer yet: cannot send files', 'sys');
@@ -451,6 +467,8 @@ function sendFile(file) {
 async function doSend(file) {
   const ch = dc; if (!ch || ch.readyState !== 'open') return;
   const id = Math.random().toString(36).slice(2, 10), name = safeName(file.name), ui = fileItem('me', name, file.size);
+  const mime = imgType(name);
+  if (mime) { const u = URL.createObjectURL(file.slice(0, file.size, mime)); blobUrls.push(u); addPreview(ui, name, u); }
   const job = sending = { id, aborted: false, reason: '' };
   ch.send(JSON.stringify({ type: 'file-start', id, name, size: file.size }));
   try {
@@ -491,6 +509,8 @@ function onFileEnd(m) {
   const url = URL.createObjectURL(new Blob(f.chunks, { type: 'application/octet-stream' })); blobUrls.push(url);
   const a = document.createElement('a'); a.href = url; a.download = f.name; a.rel = 'noopener'; a.textContent = 'Save ' + f.name;
   f.ui.bar.remove(); f.ui.st.replaceChildren(a);
+  const mime = imgType(f.name);
+  if (mime) { const u = URL.createObjectURL(new Blob(f.chunks, { type: mime })); blobUrls.push(u); addPreview({ p: f.ui.p, bar: f.ui.st }, f.name, u); }
   notifyNew();
 }
 function abortTransfers(why) {
@@ -627,16 +647,19 @@ function updateQuality(stats, rtt, avail) {
 function placeQ() {
   const st = $('stage').getBoundingClientRect(), l = $('local').getBoundingClientRect(), qs = $('qSelf'), qr = $('qRemote');
   qs.style.left = (l.left - st.left + 6) + 'px'; qs.style.top = (l.bottom - st.top - qs.offsetHeight - 6) + 'px';
-  const rh = qr.offsetHeight, base = st.height - (matchMedia('(max-width:800px)').matches ? 90 : 100) - rh;
-  let top = base; const rl = 12, rw = qr.offsetWidth;
-  const hit = l.width && l.left - st.left < rl + rw + 6 && l.top - st.top < top + rh && l.bottom - st.top > top;
+  // remote mark: bottom-left corner of the picture itself (object-fit:contain letterboxes it), not of the stage
+  const rv = $('remote'), rh = qr.offsetHeight, rw = qr.offsetWidth, ctrl = matchMedia('(max-width:800px)').matches ? 90 : 100;
+  let px = 0, pb = st.height;
+  if (rv.videoWidth && rv.videoHeight) { const sc = Math.min(st.width / rv.videoWidth, st.height / rv.videoHeight); px = (st.width - rv.videoWidth * sc) / 2; pb = (st.height + rv.videoHeight * sc) / 2; }
+  const rl = px + 6; let top = Math.min(pb - rh - 6, st.height - ctrl - rh); // and clear of the control bar
+  const hit = l.width && l.left - st.left < rl + rw + 6 && l.right - st.left > rl && l.top - st.top < top + rh && l.bottom - st.top > top;
   if (hit) top = l.top - st.top - rh - 6;
   qr.style.left = rl + 'px'; qr.style.top = top + 'px';
 }
 let qRaf = 0;
 function trackQ(ms = 400) { cancelAnimationFrame(qRaf); const end = performance.now() + ms; const f = () => { placeQ(); if (performance.now() < end) qRaf = requestAnimationFrame(f); }; f(); }
 ['transitionrun', 'transitionend', 'pointermove', 'pointerup'].forEach((ev) => $('local').addEventListener(ev, () => trackQ(ev === 'transitionrun' ? 300 : 50)));
-addEventListener('resize', () => trackQ(100)); $('local').addEventListener('loadedmetadata', () => trackQ(100));
+addEventListener('resize', () => trackQ(100)); ['loadedmetadata', 'resize'].forEach((ev) => { $('local').addEventListener(ev, () => trackQ(100)); $('remote').addEventListener(ev, () => trackQ(100)); });
 function startStats() {
   if (!reportTimer) reportTimer = setInterval(() => reportStats().catch(() => {}), REPORT_MS); // keep the phase across 'connected' flaps
   clearInterval(statsTimer);
@@ -728,7 +751,7 @@ const setPos = (p) => { lv.dataset.pos = p; store.set('selfPos', p); };
 if (/^[tb][lcr]$/.test(store.get('selfPos') || '')) lv.dataset.pos = store.get('selfPos');
 const isTouch = matchMedia('(pointer:coarse)').matches;
 document.body.classList.toggle('touch', isTouch);
-let facing = 'environment'; // mobile default: back camera; Flip button toggles to front
+let facing = 'user'; // mobile default: front camera (mirrored self view); Flip button toggles to the back camera
 const applyMirror = () => lv.classList.toggle('mirror', !sharing && $('mirror').checked && (!isTouch || facing === 'user')); // back camera is never mirrored
 const setMirror = (on) => { $('mirror').checked = on; store.set('selfMirror', on ? '1' : '0'); applyMirror(); };
 setMirror(store.get('selfMirror') !== '0'); // mirrored by default
