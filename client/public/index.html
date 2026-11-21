@@ -75,6 +75,11 @@
   .rbtn.leave:hover { filter:brightness(1.1); }
   .rbtn .dot { display:none; position:absolute; top:2px; right:2px; width:14px; height:14px; border-radius:50%; background:#22c55e; border:2px solid #14161c; box-shadow:0 0 0 0 #22c55e99; animation:ping 1.6s infinite; }
   .rbtn.has-new .dot { display:block; }
+  /* unread chat: button turns accent-coloured, the icon shakes a few times, a green dot pings */
+  .rbtn.has-new { background:var(--accent); color:var(--accent-fg); border-color:transparent; }
+  .rbtn.has-new svg { animation:shake .7s ease-in-out 3; transform-origin:50% 90%; }
+  @keyframes shake { 0%,100% { transform:rotate(0); } 15% { transform:rotate(-16deg); } 35% { transform:rotate(14deg); } 55% { transform:rotate(-10deg); } 75% { transform:rotate(6deg); } }
+  @media (prefers-reduced-motion:reduce) { .rbtn.has-new svg { animation:none; } }
   @keyframes ping { 70% { box-shadow:0 0 0 8px #22c55e00; } 100% { box-shadow:0 0 0 0 #22c55e00; } }
 
   /* Chat: hidden by default, slides in over the video */
@@ -223,7 +228,7 @@
 const $ = (id) => document.getElementById(id);
 // Version: bump on each release. Deployed copy also served as /version.json
 // ({"version": "..."}) so open tabs can detect a newer deploy.
-const VERSION = '0.9.14';
+const VERSION = '0.9.15';
 const BUILD = '2026-11-19';
 $('ver').textContent = ' v' + VERSION;
 $('ver').title = `build ${BUILD}`;
@@ -274,6 +279,7 @@ $('linkBtn').onclick = async () => {
 };
 
 async function join() {
+  prepSound();
   const room = $('room').value.trim();
   if (!/^[\w-]{1,64}$/.test(room)) return alert('room: letters, digits, - or _');
   location.hash = room;
@@ -391,7 +397,7 @@ function setupChannel(ch) {
   dc.onmessage = (e) => {
     if (typeof e.data !== 'string') return onFileChunk(e.data);
     let m; try { m = JSON.parse(e.data); } catch { return; }
-    if (m.type === 'chat') { log(m.text, 'peer'); if (!chatOpen()) $('chatBtn').classList.add('has-new'); }
+    if (m.type === 'chat') { log(m.text, 'peer'); notifyNew(); }
     if (m.type === 'viewport') { remoteViewport = m; adapt(); }
     if (m.type === 'screen') log(m.on ? 'peer is sharing their screen' : 'peer stopped sharing their screen', 'sys');
     if (m.type === 'file-start') onFileStart(m);
@@ -399,6 +405,25 @@ function setupChannel(ch) {
     if (m.type === 'file-reject' && sending && sending.id === m.id) { sending.aborted = true; sending.reason = m.reason || 'rejected by peer'; }
   };
 }
+// New-message alert: bar wakes up, chat button changes colour/shakes (see .has-new), and a short quiet beep.
+// The AudioContext is created on the Join click (browsers only allow sound after a gesture).
+let audioCtx = null, lastBeep = 0;
+function prepSound() { try { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); audioCtx.resume(); } catch {} }
+function beep() {
+  const now = Date.now(); if (!audioCtx || now - lastBeep < 800) return; lastBeep = now;
+  try {
+    const t = audioCtx.currentTime, o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(880, t); o.frequency.setValueAtTime(1175, t + 0.09); // two quick rising notes
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.06, t + 0.015); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.2); // peak 6%: audible, not loud
+    o.connect(g).connect(audioCtx.destination); o.start(t); o.stop(t + 0.22);
+  } catch {}
+}
+function notifyNew(sound = true) {
+  const seen = chatOpen() && document.hasFocus();
+  if (!chatOpen()) { $('chatBtn').classList.remove('has-new'); void $('chatBtn').offsetWidth; $('chatBtn').classList.add('has-new'); wake(); } // re-add restarts the shake
+  if (sound && !seen) beep();
+}
+
 // ---- File transfer over the chat data channel (ordered + reliable) ---------------------------------
 // One file at a time: file-start (JSON) -> binary chunks -> file-end (JSON). The receiver gets a chat item with
 // a Save link (click = browser download). Files live in memory on the receiver, hence the size cap.
@@ -450,7 +475,7 @@ function onFileStart(m) {
   const size = Number(m.size), name = safeName(m.name);
   if (!(size > 0) || size > FILE_MAX) { dc.send(JSON.stringify({ type: 'file-reject', id: m.id, reason: 'too large (limit ' + fmtSize(FILE_MAX) + ')' })); return log(`Rejected ${name}: too large`, 'sys'); }
   rx = { id: m.id, name, size, got: 0, chunks: [], ui: fileItem('peer', name, size) };
-  if (!chatOpen()) $('chatBtn').classList.add('has-new');
+  notifyNew(false);
 }
 function onFileChunk(buf) {
   if (!rx) return;
@@ -466,7 +491,7 @@ function onFileEnd(m) {
   const url = URL.createObjectURL(new Blob(f.chunks, { type: 'application/octet-stream' })); blobUrls.push(url);
   const a = document.createElement('a'); a.href = url; a.download = f.name; a.rel = 'noopener'; a.textContent = 'Save ' + f.name;
   f.ui.bar.remove(); f.ui.st.replaceChildren(a);
-  if (!chatOpen()) $('chatBtn').classList.add('has-new');
+  notifyNew();
 }
 function abortTransfers(why) {
   if (sending) { sending.aborted = true; sending.reason = why; }
