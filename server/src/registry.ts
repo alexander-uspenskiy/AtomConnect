@@ -11,7 +11,8 @@ export const RETENTION_DAYS = 30;
 const DAY = 86_400_000;
 const FLUSH_SAMPLES = 10; // buffered samples per peer before a flush (10 x 30s = 5 min)
 const FLUSH_MS = 6 * 60_000; // alarm backstop so a buffer never sits unflushed for long
-const REOPEN_MS = 30_000; // a lone peer rejoining (?prev=) within this window resumes its session
+const REOPEN_MS = 30_000; // a lone peer rejoining (?prev=) within this window resumes an already-ended session
+const GRACE_MS = 120_000; // everyone gone this long (and nobody hung up) = the session ends; a rejoin before then continues it
 const PROBE_MS = 90_000; // open sessions silent this long are verified against the Room before being shown
 const MAX_SAMPLES = 2880; // 24h at 30s; caps a timeline row far below SQLite's 2 MB row limit
 
@@ -155,7 +156,9 @@ export class Registry extends DurableObject<Env> {
 
   // One alarm slot: sooner of "flush buffers" (only while something is buffered) and "daily prune".
   private async arm() {
-    const want = this.buf.size ? Date.now() + FLUSH_MS : this.nextPrune();
+    let want = this.buf.size ? Date.now() + FLUSH_MS : this.nextPrune();
+    const g = this.nextGrace();
+    if (g !== null) want = Math.min(want, Math.max(g, Date.now() + 1000));
     const cur = await this.ctx.storage.getAlarm();
     if (cur === null || cur > want) await this.ctx.storage.setAlarm(want);
   }
@@ -163,6 +166,7 @@ export class Registry extends DurableObject<Env> {
   async alarm() {
     this.flushAll();
     const now = Date.now();
+    this.reap(now);
     if (now >= this.nextPrune()) {
       try { this.prune(now); } catch (e) { console.error("prune failed", e); }
     }
@@ -196,11 +200,49 @@ export class Registry extends DurableObject<Env> {
     )[0].n;
   }
 
+  private hasLeft(sid: string, peer: string): boolean {
+    return this.rows("SELECT 1 FROM events WHERE session_id=? AND peer=? AND type='leave' LIMIT 1", sid, peer).length > 0;
+  }
+
+  private lastLeave(sid: string): { ts: number; code: number } | undefined {
+    const e = this.rows<{ ts: number; detail: string | null }>("SELECT ts,detail FROM events WHERE session_id=? AND type='leave' ORDER BY id DESC LIMIT 1", sid)[0];
+    if (!e) return undefined;
+    let code = 1005;
+    try { code = (JSON.parse(e.detail ?? "{}") as { code?: number }).code ?? 1005; } catch { /* ignore */ }
+    return { ts: e.ts, code };
+  }
+
+  // Open sessions with nobody in them are in their grace window: when the last peer left, then +GRACE_MS
+  private emptyOpen(): { s: Row; last: { ts: number; code: number } }[] {
+    const out: { s: Row; last: { ts: number; code: number } }[] = [];
+    for (const s of this.rows<Row>("SELECT * FROM sessions WHERE ended_at IS NULL LIMIT 200")) {
+      if (this.present(s.id) > 0) continue;
+      const last = this.lastLeave(s.id);
+      if (last) out.push({ s, last });
+    }
+    return out;
+  }
+
+  private nextGrace(): number | null {
+    const e = this.emptyOpen();
+    return e.length ? Math.min(...e.map((x) => x.last.ts + GRACE_MS)) : null;
+  }
+
+  // End sessions whose grace window has run out. ended_at is the moment the last peer left, not the check time.
+  private reap(now: number) {
+    for (const { s, last } of this.emptyOpen()) {
+      if (now - last.ts < GRACE_MS) continue;
+      const clean = last.code === 1000 || last.code === 1001 || last.code === 1005;
+      this.endSession(s, last.ts, clean ? "left" : last.code === 4000 ? "timeout" : "dropped");
+    }
+  }
+
   private event(sid: string, ts: number, peer: string | null, type: string, detail: unknown) {
     this.sql.exec("INSERT INTO events(session_id,ts,peer,type,detail) VALUES(?,?,?,?,?)", sid, ts, peer, type, JSON.stringify(detail));
   }
 
   peerJoined(room: string, peer: string, prev: string | null, ts: number, info: { ua?: string; cc?: string; v?: string }) {
+    this.reap(ts); // a rejoin after the grace window must start a new session, not extend a dead one
     let s = this.latest(room);
     if (s && s.ended_at === null) {
       // session already open
@@ -212,6 +254,12 @@ export class Registry extends DurableObject<Env> {
     }
     s = this.latest(room)!;
     const reconnect = !!prev && this.hasPeer(s.id, prev);
+    if (reconnect && !this.hasLeft(s.id, prev!)) {
+      // the old connection of this client was superseded without a leave notice: close it so it isn't "present" forever
+      this.event(s.id, ts, prev, "leave", { code: 4000, reason: "replaced", drop: false });
+      this.flush(s.id, prev!);
+      this.last.delete(prev!);
+    }
     this.event(s.id, ts, peer, "join", { ua: info.ua, cc: info.cc, v: info.v, ...(reconnect && { reconnect: true, prev }) });
     if (reconnect) this.sql.exec("UPDATE sessions SET reconnects=reconnects+1 WHERE id=?", s.id);
     const n = this.present(s.id);
@@ -229,7 +277,12 @@ export class Registry extends DurableObject<Env> {
     this.flush(s.id, peer);
     this.last.delete(peer);
     const hungUp = this.rows("SELECT 1 FROM events WHERE session_id=? AND type='hangup' LIMIT 1", s.id).length > 0;
-    if (s.ended_at === null && this.present(s.id) <= 0) this.endSession(s, ts, clean ? (hungUp ? "hangup" : "left") : code === 4000 ? "timeout" : "dropped");
+    // Hang-up ends the call now. Anything else (drop, closed tab) leaves the session open for GRACE_MS so a
+    // rejoin continues it; reap() ends it afterwards, and so every reconnect's traffic lands in one session.
+    if (s.ended_at === null && this.present(s.id) <= 0) {
+      if (hungUp) this.endSession(s, ts, "hangup");
+      else this.arm().catch(() => {});
+    }
   }
 
   // A peer pressed the hang-up button: the session counts as ended normally (not a drop or a closed tab)
@@ -238,6 +291,7 @@ export class Registry extends DurableObject<Env> {
     if (!s || !this.hasPeer(s.id, peer)) return;
     this.event(s.id, ts, peer, "hangup", {});
     this.sql.exec("UPDATE sessions SET end_reason='hangup' WHERE id=? AND end_reason='left'", s.id); // leave notice raced ahead
+    if (s.ended_at === null && this.present(s.id) <= 0) this.endSession(s, ts, "hangup"); // leave notice raced ahead of the hang-up
     this.sumCache = null;
   }
 
@@ -364,9 +418,12 @@ export class Registry extends DurableObject<Env> {
   }
 
   private async active(now: number) {
+    this.reap(now);
     const open = this.rows<Row>("SELECT * FROM sessions WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 200");
     const out = [];
     for (const s of open) {
+      if (this.present(s.id) <= 0) continue; // empty, inside its grace window: not an active call
+
       // Quiet rooms (e.g. a lone peer waiting) send us nothing: ask the Room whether anyone is really there
       if (now - (this.touched.get(s.room) ?? 0) > PROBE_MS) {
         let n = 1;
