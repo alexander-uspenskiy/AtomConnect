@@ -91,6 +91,13 @@
   #log .sys { align-self:center; max-width:100%; background:none; color:var(--mute); font-size:12px; padding:2px; text-align:center; }
   form#chat { display:flex; gap:6px; } form#chat input { flex:1; min-width:0; border-radius:999px; padding:9px 14px; }
   form#chat button { border-radius:999px; }
+  form#chat #attach { padding:0 12px; font-size:16px; line-height:1; }
+  #log .file { display:flex; flex-direction:column; gap:4px; min-width:150px; }
+  #log .file progress { width:100%; height:6px; accent-color:currentColor; }
+  #log .file .fs { font-size:12px; opacity:.85; } #log .file a { color:inherit; font-weight:600; }
+  .stage.drop::after { content:"Drop files to send"; position:absolute; inset:12px; z-index:9; display:grid; place-items:center; border:2px dashed #fff9; border-radius:20px; background:#0009; color:#fff; font-size:18px; pointer-events:none; }
+  #local.screen { object-fit:contain; background:#000; }
+  #screen { display:none; }
   #update { flex:none; display:none; background:var(--accent); color:var(--accent-fg); padding:8px 16px; font-size:14px; align-items:center; gap:12px; justify-content:space-between; }
   #update button { background:var(--accent-fg); color:var(--accent); padding:4px 10px; }
   header { position:relative; }
@@ -198,12 +205,13 @@
   <aside class="chat" id="chatPanel" aria-label="Chat" aria-hidden="true">
     <div class="ch"><span>Chat</span><button id="chatClose" aria-label="Close chat">&times;</button></div>
     <div id="log"></div>
-    <form id="chat"><input id="msg" placeholder="Message" autocomplete="off" enterkeyhint="send" disabled><button disabled>Send</button></form>
+    <form id="chat"><button type="button" id="attach" class="secondary" title="Send a file (or drop it anywhere on the call)" aria-label="Send a file" disabled>&#128206;</button><input id="msg" placeholder="Message" autocomplete="off" enterkeyhint="send" disabled><button id="send" disabled>Send</button><input type="file" id="fileIn" multiple hidden></form>
   </aside>
 
   <div class="controls" id="controls">
     <button class="rbtn" id="mute" title="Mute" aria-label="Mute"><svg class="main" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0014 0v-1M12 18v4"/></svg><svg class="alt" viewBox="0 0 24 24"><path d="M1 1l22 22M9 9v2a3 3 0 005.1 2.1M15 9.3V5a3 3 0 00-5.9-.7M17 16.9A7 7 0 015 11v-1M19 10v1a7 7 0 01-.1 1.2M12 18v4"/></svg></button>
     <button class="rbtn" id="cam" title="Camera" aria-label="Camera"><svg class="main" viewBox="0 0 24 24"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg><svg class="alt" viewBox="0 0 24 24"><path d="M16 16v1a2 2 0 01-2 2H3a2 2 0 01-2-2V7a2 2 0 012-2h2m5.7 0H14a2 2 0 012 2v3.3l1 1L23 7v10M1 1l22 22"/></svg></button>
+    <button class="rbtn" id="screen" title="Share screen" aria-label="Share screen"><svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></button>
     <button class="rbtn" id="flip" title="Flip camera" aria-label="Flip camera"><svg class="main" viewBox="0 0 24 24"><path d="M20 7h-3.2l-1.6-2H8.8L7.2 7H4a2 2 0 00-2 2v9a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M9 13a3 3 0 015-1.7M15 13a3 3 0 01-5 1.7M14 9.5v2h2M10 16.5v-2H8"/></svg></button>
     <button class="rbtn" id="gearBtn" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg></button>
     <button class="rbtn" id="chatBtn" title="Chat" aria-label="Chat"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2v10z"/></svg><span class="dot"></span></button>
@@ -215,7 +223,7 @@
 const $ = (id) => document.getElementById(id);
 // Version: bump on each release. Deployed copy also served as /version.json
 // ({"version": "..."}) so open tabs can detect a newer deploy.
-const VERSION = '0.9.13';
+const VERSION = '0.9.14';
 const BUILD = '2026-11-19';
 $('ver').textContent = ' v' + VERSION;
 $('ver').title = `build ${BUILD}`;
@@ -355,7 +363,8 @@ function newPc(ice, initiator) {
   closePc();
   isInitiator = initiator;
   pc = new RTCPeerConnection(ice);
-  stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+  const sv = sharing && screenStream ? screenStream.getVideoTracks()[0] : null; // a rebuilt connection keeps sending the screen
+  stream.getTracks().forEach((t) => pc.addTrack(sv && t.kind === 'video' ? sv : t, stream));
   pc.onicecandidate = (e) => e.candidate && send({ type: 'ice', candidate: e.candidate, to: peerId });
   pc.ontrack = (e) => { $('remote').srcObject = e.streams[0]; };
   pc.onconnectionstatechange = () => {
@@ -375,14 +384,134 @@ async function makeOffer(fresh) { await pc.setLocalDescription(); send({ type: '
 
 function setupChannel(ch) {
   dc = ch;
-  dc.onopen = () => { $('msg').disabled = false; $('chat').querySelector('button').disabled = false; reportViewport(); };
-  dc.onclose = () => { $('msg').disabled = true; $('chat').querySelector('button').disabled = true; };
+  dc.binaryType = 'arraybuffer';
+  const chatEnable = (on) => { $('msg').disabled = !on; $('send').disabled = !on; $('attach').disabled = !on; };
+  dc.onopen = () => { chatEnable(true); reportViewport(); if (sharing) dc.send(JSON.stringify({ type: 'screen', on: true })); };
+  dc.onclose = () => { chatEnable(false); abortTransfers('connection closed'); };
   dc.onmessage = (e) => {
-    const m = JSON.parse(e.data);
+    if (typeof e.data !== 'string') return onFileChunk(e.data);
+    let m; try { m = JSON.parse(e.data); } catch { return; }
     if (m.type === 'chat') { log(m.text, 'peer'); if (!chatOpen()) $('chatBtn').classList.add('has-new'); }
     if (m.type === 'viewport') { remoteViewport = m; adapt(); }
+    if (m.type === 'screen') log(m.on ? 'peer is sharing their screen' : 'peer stopped sharing their screen', 'sys');
+    if (m.type === 'file-start') onFileStart(m);
+    if (m.type === 'file-end') onFileEnd(m);
+    if (m.type === 'file-reject' && sending && sending.id === m.id) { sending.aborted = true; sending.reason = m.reason || 'rejected by peer'; }
   };
 }
+// ---- File transfer over the chat data channel (ordered + reliable) ---------------------------------
+// One file at a time: file-start (JSON) -> binary chunks -> file-end (JSON). The receiver gets a chat item with
+// a Save link (click = browser download). Files live in memory on the receiver, hence the size cap.
+const FILE_CHUNK = 16 * 1024, FILE_MAX = 100 * 1024 * 1024, FILE_BUF = 1024 * 1024;
+let sending = null, rx = null, sendQ = Promise.resolve();
+const blobUrls = [];
+const fmtSize = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + ' MB' : n >= 1e3 ? Math.round(n / 1e3) + ' kB' : n + ' B');
+const safeName = (n) => String(n || 'file').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/^\.+/, '_').slice(0, 120) || 'file';
+function fileItem(cls, name, size) {
+  const p = document.createElement('p'); p.className = 'file ' + cls;
+  const t = document.createElement('span'); t.textContent = '\u{1F4CE} ' + name + ' (' + fmtSize(size) + ')';
+  const bar = document.createElement('progress'); bar.max = size; bar.value = 0;
+  const st = document.createElement('span'); st.className = 'fs';
+  p.append(t, bar, st); $('log').append(p); $('log').scrollTop = 1e9;
+  return { bar, st };
+}
+const fileFail = (ui, why) => { ui.bar.remove(); ui.st.textContent = 'failed: ' + why; };
+function sendFile(file) {
+  if (!dc || dc.readyState !== 'open') return log('Not connected to a peer yet: cannot send files', 'sys');
+  if (!file.size) return log(file.name + ' is empty', 'sys');
+  if (file.size > FILE_MAX) return log(`${file.name} is too large (limit ${fmtSize(FILE_MAX)})`, 'sys');
+  setChat(true);
+  sendQ = sendQ.then(() => doSend(file)).catch((e) => console.warn(e));
+}
+async function doSend(file) {
+  const ch = dc; if (!ch || ch.readyState !== 'open') return;
+  const id = Math.random().toString(36).slice(2, 10), name = safeName(file.name), ui = fileItem('me', name, file.size);
+  const job = sending = { id, aborted: false, reason: '' };
+  ch.send(JSON.stringify({ type: 'file-start', id, name, size: file.size }));
+  try {
+    for (let off = 0; off < file.size; off += FILE_BUF) {
+      const block = await file.slice(off, off + FILE_BUF).arrayBuffer();
+      for (let i = 0; i < block.byteLength; i += FILE_CHUNK) {
+        // backpressure: let the channel drain instead of buffering the whole file
+        while (ch.readyState === 'open' && ch.bufferedAmount > FILE_BUF && !job.aborted) await new Promise((r) => setTimeout(r, 15));
+        if (job.aborted || ch.readyState !== 'open') throw new Error(job.reason || 'connection closed');
+        ch.send(block.slice(i, i + FILE_CHUNK));
+        ui.bar.value = Math.min(file.size, off + i + FILE_CHUNK);
+      }
+    }
+    ch.send(JSON.stringify({ type: 'file-end', id }));
+    ui.bar.remove(); ui.st.textContent = 'sent';
+  } catch (e) { fileFail(ui, e.message); try { if (ch.readyState === 'open') ch.send(JSON.stringify({ type: 'file-end', id, abort: true })); } catch {} }
+  finally { if (sending === job) sending = null; }
+}
+function onFileStart(m) {
+  if (rx) fileFail(rx.ui, 'interrupted');
+  rx = null;
+  const size = Number(m.size), name = safeName(m.name);
+  if (!(size > 0) || size > FILE_MAX) { dc.send(JSON.stringify({ type: 'file-reject', id: m.id, reason: 'too large (limit ' + fmtSize(FILE_MAX) + ')' })); return log(`Rejected ${name}: too large`, 'sys'); }
+  rx = { id: m.id, name, size, got: 0, chunks: [], ui: fileItem('peer', name, size) };
+  if (!chatOpen()) $('chatBtn').classList.add('has-new');
+}
+function onFileChunk(buf) {
+  if (!rx) return;
+  rx.got += buf.byteLength;
+  if (rx.got > rx.size) { dc.send(JSON.stringify({ type: 'file-reject', id: rx.id, reason: 'more data than announced' })); fileFail(rx.ui, 'more data than announced'); rx = null; return; }
+  rx.chunks.push(buf); rx.ui.bar.value = rx.got;
+}
+function onFileEnd(m) {
+  if (!rx || rx.id !== m.id) return;
+  const f = rx; rx = null;
+  if (m.abort) return fileFail(f.ui, 'cancelled by sender');
+  if (f.got !== f.size) return fileFail(f.ui, 'incomplete');
+  const url = URL.createObjectURL(new Blob(f.chunks, { type: 'application/octet-stream' })); blobUrls.push(url);
+  const a = document.createElement('a'); a.href = url; a.download = f.name; a.rel = 'noopener'; a.textContent = 'Save ' + f.name;
+  f.ui.bar.remove(); f.ui.st.replaceChildren(a);
+  if (!chatOpen()) $('chatBtn').classList.add('has-new');
+}
+function abortTransfers(why) {
+  if (sending) { sending.aborted = true; sending.reason = why; }
+  if (rx) { fileFail(rx.ui, why); rx = null; }
+}
+$('attach').onclick = () => $('fileIn').click();
+$('fileIn').onchange = (e) => { [...e.target.files].forEach(sendFile); e.target.value = ''; };
+// drop files anywhere on the call
+let dragDepth = 0;
+const hasFiles = (e) => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+$('stage').addEventListener('dragenter', (e) => { if (hasFiles(e)) { dragDepth++; $('stage').classList.add('drop'); e.preventDefault(); } });
+$('stage').addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
+$('stage').addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; $('stage').classList.remove('drop'); } });
+$('stage').addEventListener('drop', (e) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; $('stage').classList.remove('drop'); [...e.dataTransfer.files].forEach(sendFile); });
+
+// ---- Screen sharing (desktop browsers): swaps the outgoing video track, no renegotiation ------------
+let screenStream = null, sharing = false;
+$('screen').style.display = navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia && !isTouchDevice() ? 'grid' : 'none'; // phones can't share a screen
+function isTouchDevice() { return matchMedia('(pointer:coarse)').matches; }
+const videoSender = () => pc && pc.getSenders().find((x) => x.track && x.track.kind === 'video');
+async function startShare() {
+  if (!stream || sharing) return;
+  try { screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 15, max: 30 } }, audio: false }); }
+  catch (e) { if (e.name !== 'NotAllowedError') log('Screen sharing failed: ' + e.name, 'sys'); return; }
+  const t = screenStream.getVideoTracks()[0]; t.contentHint = 'detail'; // keep text sharp, drop frame rate first
+  t.onended = () => stopShare(); // browser's own "Stop sharing" bar
+  sharing = true;
+  const s = videoSender(); if (s) await s.replaceTrack(t).catch((e) => log('Could not send screen: ' + e.name, 'sys'));
+  $('local').srcObject = screenStream; $('local').classList.add('screen'); applyMirror();
+  $('screen').classList.add('on'); $('screen').title = 'Stop sharing';
+  if (dc && dc.readyState === 'open') dc.send(JSON.stringify({ type: 'screen', on: true }));
+  log('you are sharing your screen', 'sys');
+}
+async function stopShare(quiet) {
+  if (!sharing) return;
+  sharing = false;
+  const t = screenStream && screenStream.getVideoTracks()[0]; if (t) { t.onended = null; t.stop(); } screenStream = null;
+  const cam = stream && stream.getVideoTracks()[0], s = videoSender() || (pc && pc.getSenders().find((x) => x.track === t));
+  if (s && cam) await s.replaceTrack(cam).catch(() => {});
+  if (stream) $('local').srcObject = stream; $('local').classList.remove('screen'); applyMirror();
+  $('screen').classList.remove('on'); $('screen').title = 'Share screen';
+  if (!quiet) { if (dc && dc.readyState === 'open') dc.send(JSON.stringify({ type: 'screen', on: false })); log('you stopped sharing', 'sys'); }
+}
+$('screen').onclick = () => (sharing ? stopShare() : startShare());
+
 // Adaptive: tell the peer our rendered video size so they can downscale
 function reportViewport() {
   if (!dc || dc.readyState !== 'open') return;
@@ -557,6 +686,7 @@ async function leave(fromClose) {
   if (pc && ws && ws.readyState === 1) await Promise.race([reportStats().catch(() => {}), new Promise((r) => setTimeout(r, 700))]);
   if (!fromClose) send({ type: 'hangup' }); // the hang-up button ends the call for the counterpart too
   const w = ws; ws = null; if (w && !fromClose) w.close(); else if (w) try { w.close(); } catch {}
+  await stopShare(true); abortTransfers('call ended'); blobUrls.splice(0).forEach((u) => URL.revokeObjectURL(u));
   closePc(false); if (stream) stream.getTracks().forEach((t) => t.stop()); stream = null; $('local').srcObject = null; releaseAwake();
   setUi(false); setStatus('idle');
 }
@@ -574,7 +704,7 @@ if (/^[tb][lcr]$/.test(store.get('selfPos') || '')) lv.dataset.pos = store.get('
 const isTouch = matchMedia('(pointer:coarse)').matches;
 document.body.classList.toggle('touch', isTouch);
 let facing = 'environment'; // mobile default: back camera; Flip button toggles to front
-const applyMirror = () => lv.classList.toggle('mirror', $('mirror').checked && (!isTouch || facing === 'user')); // back camera is never mirrored
+const applyMirror = () => lv.classList.toggle('mirror', !sharing && $('mirror').checked && (!isTouch || facing === 'user')); // back camera is never mirrored
 const setMirror = (on) => { $('mirror').checked = on; store.set('selfMirror', on ? '1' : '0'); applyMirror(); };
 setMirror(store.get('selfMirror') !== '0'); // mirrored by default
 $('mirror').onchange = (e) => setMirror(e.target.checked);
@@ -644,8 +774,8 @@ async function switchInput(kind, deviceId) {
     if (old) { nt.enabled = old.enabled; stream.removeTrack(old); old.stop(); }
     stream.addTrack(nt);
     const sender = pc && pc.getSenders().find((x) => x.track && x.track.kind === kind);
-    if (sender) await sender.replaceTrack(nt);
-    if (kind === 'video') { $('local').srcObject = null; $('local').srcObject = stream; }
+    if (sender && !(kind === 'video' && sharing)) await sender.replaceTrack(nt); // while sharing, the camera comes back on stop
+    if (kind === 'video' && !sharing) { $('local').srcObject = null; $('local').srcObject = stream; }
     refreshDevices();
   } catch (e) { log(`Could not switch ${kind === 'video' ? 'camera' : 'microphone'}: ${e.name}`, 'sys'); }
 }
