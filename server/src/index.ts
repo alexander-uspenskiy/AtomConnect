@@ -243,6 +243,8 @@ export class Room extends DurableObject<Env> {
       if (now - (st ?? 0) >= STATS_MIN_MS) {
         st = now;
         this.notify(this.reg().stats(room, from, msg));
+      } else {
+        this.notify(this.reg().statsDropped(room));
       }
     } else if (msg.type === "hangup") {
       this.notify(this.reg().hangup(room, from, now));

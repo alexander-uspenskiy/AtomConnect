@@ -28,10 +28,12 @@ export type Sample = {
   ir: number; // cumulative ICE restarts on this client
   tx: number; rx: number; // media bytes sent / received in the interval
   wsr: number; // cumulative signaling reconnects on this client
+  sn: number; sk: number; // client's cumulative reports sent / skipped (diagnostics: compare with samples stored)
 };
 
 type Agg = { samples: number; rtt_n: number; rtt_sum: number; rtt_max: number; lost: number; recv: number; relay_samples: number; tx_bytes: number; rx_bytes: number };
 type Row = Agg & {
+  diag: string | null;
   id: string; room: string; started_at: number; ended_at: number | null; end_reason: string | null;
   peak_peers: number; reconnects: number; drops: number; media_drops: number; ice_restarts: number;
 };
@@ -45,7 +47,7 @@ const SCHEMA = [
     media_drops INTEGER NOT NULL DEFAULT 0, ice_restarts INTEGER NOT NULL DEFAULT 0,
     samples INTEGER NOT NULL DEFAULT 0, rtt_n INTEGER NOT NULL DEFAULT 0, rtt_sum REAL NOT NULL DEFAULT 0,
     rtt_max REAL NOT NULL DEFAULT 0, lost INTEGER NOT NULL DEFAULT 0, recv INTEGER NOT NULL DEFAULT 0,
-    relay_samples INTEGER NOT NULL DEFAULT 0, tx_bytes INTEGER NOT NULL DEFAULT 0, rx_bytes INTEGER NOT NULL DEFAULT 0)`,
+    relay_samples INTEGER NOT NULL DEFAULT 0, tx_bytes INTEGER NOT NULL DEFAULT 0, rx_bytes INTEGER NOT NULL DEFAULT 0, diag TEXT)`,
   `CREATE INDEX IF NOT EXISTS sessions_started ON sessions(started_at)`,
   `CREATE INDEX IF NOT EXISTS sessions_room ON sessions(room, started_at)`,
   `CREATE INDEX IF NOT EXISTS sessions_open ON sessions(ended_at) WHERE ended_at IS NULL`, // "active" lookup without a table scan
@@ -68,7 +70,7 @@ function cleanSample(r: Record<string, unknown>, t: number): Sample {
     t, rtt: num(r.rtt, 60_000, 1), kbps: num(r.kbps, 1e7), lost: num(r.lost, 1e7), recv: num(r.recv, 1e9),
     jit: num(r.jit, 60_000, 1), w: num(r.w, 8192), h: num(r.h, 8192), fps: num(r.fps, 240),
     relay: r.relay ? 1 : 0, ice: typeof r.ice === "string" ? r.ice.slice(0, 16) : "", ir: num(r.ir, 1e4), wsr: num(r.wsr, 1e4),
-    tx: num(r.tx, 1e11), rx: num(r.rx, 1e11),
+    tx: num(r.tx, 1e11), rx: num(r.rx, 1e11), sn: num(r.sn, 1e7), sk: num(r.sk, 1e7),
   };
 }
 
@@ -107,7 +109,7 @@ function view(s: Row, now: number) {
     reconnects, ws_reconnects: s.reconnects, ice_restarts: s.ice_restarts,
     samples: s.samples, avg_rtt: r1(avgRtt), max_rtt: r1(s.rtt_max), loss_pct: r1(lossPct * 10) / 10,
     relay_pct: s.samples ? Math.round((100 * s.relay_samples) / s.samples) : 0,
-    grade: grade(avgRtt, lossPct, reconnects, s.samples),
+    grade: !s.samples && s.peak_peers < 2 ? "solo" : grade(avgRtt, lossPct, reconnects, s.samples), // solo: nobody joined, so there was no media to measure
     // media data moved during the call: bytes sent by all peers (each byte sent is received by the other side)
     data_gb: Math.round(s.tx_bytes / 1e6) / 1000, tx_bytes: s.tx_bytes, rx_bytes: s.rx_bytes,
   };
@@ -119,6 +121,9 @@ export class Registry extends DurableObject<Env> {
   private last = new Map<string, Sample>(); // peer -> latest sample (live view)
   private touched = new Map<string, number>(); // room -> last time we heard about it
   private sumCache: { at: number; v: unknown } | null = null;
+  // Ingest diagnostics per session: stats messages that reached the Registry and why some were not stored.
+  // In memory, persisted (as one JSON column) whenever that session's samples are flushed.
+  private diag = new Map<string, Record<string, number>>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -129,6 +134,7 @@ export class Registry extends DurableObject<Env> {
       for (const c of ["tx_bytes", "rx_bytes"]) {
         try { this.sql.exec(`ALTER TABLE sessions ADD COLUMN ${c} INTEGER NOT NULL DEFAULT 0`); } catch { /* already present */ }
       }
+      try { this.sql.exec("ALTER TABLE sessions ADD COLUMN diag TEXT"); } catch { /* already present */ }
       await this.arm();
     });
   }
@@ -235,9 +241,18 @@ export class Registry extends DurableObject<Env> {
     this.sumCache = null;
   }
 
+  private bump(sid: string, k: string) {
+    const d = this.diag.get(sid) ?? {};
+    d[k] = (d[k] ?? 0) + 1;
+    this.diag.set(sid, d);
+  }
+
   async stats(room: string, peer: string, raw: Record<string, unknown>) {
     const s = this.latest(room);
-    if (!s || s.ended_at !== null || !this.hasPeer(s.id, peer)) return;
+    if (!s) return;
+    this.bump(s.id, "in");
+    if (s.ended_at !== null) return this.bump(s.id, "drop_ended");
+    if (!this.hasPeer(s.id, peer)) return this.bump(s.id, "drop_nopeer");
     const ts = Date.now(), x = cleanSample(raw, ts), key = `${s.id}|${peer}`;
     const hadBuf = this.buf.size > 0;
     const arr = this.buf.get(key) ?? [];
@@ -247,6 +262,12 @@ export class Registry extends DurableObject<Env> {
     this.touched.set(room, ts);
     if (arr.length >= FLUSH_SAMPLES) this.flush(s.id, peer);
     if (!hadBuf) await this.arm();
+  }
+
+  // Room reports messages it rate-limited, so "sent by client" vs "stored" can be fully accounted for
+  statsDropped(room: string) {
+    const s = this.latest(room);
+    if (s) this.bump(s.id, "drop_rate");
   }
 
   mediaEvent(room: string, peer: string, kind: string, reason: string) {
@@ -265,6 +286,8 @@ export class Registry extends DurableObject<Env> {
 
   private endSession(s: Row, ts: number, reason: string) {
     this.flushSession(s.id);
+    this.saveDiag(s.id);
+    this.diag.delete(s.id);
     this.sql.exec("UPDATE sessions SET ended_at=?, end_reason=? WHERE id=? AND ended_at IS NULL", ts, reason, s.id);
     this.touched.delete(s.room);
     this.sumCache = null;
@@ -290,6 +313,12 @@ export class Registry extends DurableObject<Env> {
       "UPDATE sessions SET samples=samples+?, rtt_n=rtt_n+?, rtt_sum=rtt_sum+?, rtt_max=MAX(rtt_max,?), lost=lost+?, recv=recv+?, relay_samples=relay_samples+?, tx_bytes=tx_bytes+?, rx_bytes=rx_bytes+? WHERE id=?",
       a.samples, a.rtt_n, a.rtt_sum, a.rtt_max, a.lost, a.recv, a.relay_samples, a.tx_bytes, a.rx_bytes, sid,
     );
+    this.saveDiag(sid);
+  }
+
+  private saveDiag(sid: string) {
+    const d = this.diag.get(sid);
+    if (d) this.sql.exec("UPDATE sessions SET diag=? WHERE id=?", JSON.stringify(d), sid);
   }
 
   private flushSession(sid: string) {
@@ -417,6 +446,16 @@ export class Registry extends DurableObject<Env> {
     const events = this.rows<Ev>("SELECT ts,peer,type,detail FROM events WHERE session_id=? ORDER BY id", sid).map((e) => ({
       ts: e.ts, peer: e.peer, type: e.type, detail: e.detail ? JSON.parse(e.detail) : null,
     }));
-    return { session: view(this.withBuffer(s), now), peers, events, timelines, peer_summary };
+    // Ingest accounting: each client numbers its reports (sn), so a gap inside one peer's run of sn values
+    // is a report the client sent that was never stored; `stored` is what the timelines hold
+    let gaps = 0, stored = 0;
+    for (const tl of Object.values(timelines)) {
+      const sn = tl.map((x) => x.sn ?? 0).filter((n) => n > 0);
+      stored += tl.length;
+      if (sn.length) gaps += Math.max(0, Math.max(...sn) - Math.min(...sn) + 1 - sn.length);
+    }
+    let d: Record<string, number> = this.diag.get(sid) ?? {};
+    if (!this.diag.has(sid) && s.diag) try { d = JSON.parse(s.diag); } catch { /* ignore */ }
+    return { session: view(this.withBuffer(s), now), peers, events, timelines, peer_summary, ingest: { stored, sn_gaps: gaps, ...d } };
   }
 }

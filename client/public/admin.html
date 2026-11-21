@@ -123,8 +123,8 @@ function gauge(label, val, limit, unit, note) {
     <div class="small">${esc(val.toLocaleString())} / ${esc(limit.toLocaleString())} ${esc(unit)}</div>
     ${msg ? `<div class="st">${msg}</div>` : ''}<div class="mute small">${esc(note)}</div></div>`;
 }
-const GRADE = { good: ['✓', 'Good'], fair: ['!', 'Fair'], poor: ['✕', 'Poor'], 'n/a': ['–', 'No data'] };
-const badge = (g) => `<span class="badge ${g === 'n/a' ? 'na' : g}"><span aria-hidden="true">${GRADE[g][0]}</span>${GRADE[g][1]}</span>`;
+const GRADE = { good: ['✓', 'Good'], fair: ['!', 'Fair'], poor: ['✕', 'Poor'], 'n/a': ['–', 'No data'], solo: ['–', 'Solo'] };
+const badge = (g) => `<span class="badge ${g === 'n/a' || g === 'solo' ? 'na' : g}"><span aria-hidden="true">${GRADE[g][0]}</span>${GRADE[g][1]}</span>`;
 const gb = (b) => (b >= 1e7 ? (b / 1e9).toFixed(2) + ' GB' : b > 0 ? (b / 1e6).toFixed(1) + ' MB' : '–');
 const END = { hangup: 'Ended Normal', left: 'Left', dropped: 'Dropped', timeout: 'Timed out', lost: 'Lost contact' };
 function device(ua) {
@@ -293,6 +293,7 @@ function detailView() {
       <div><span>Data used</span>${gb(s.tx_bytes)} <small class="mute">(media sent by all peers)</small></div>
       <div><span>Drops</span>${s.drops} <small class="mute">(${s.ws_drops} signaling, ${s.media_drops} media)</small></div>
       <div><span>Reconnects</span>${s.reconnects} <small class="mute">(${s.ws_reconnects} signaling, ${s.ice_restarts} ICE restarts)</small></div>
+      <div><span>Stats ingest</span>${detail.ingest ? `${detail.ingest.stored} stored · ${detail.ingest.in ?? 0} received${detail.ingest.sn_gaps ? ` · <b class="err">${detail.ingest.sn_gaps} lost after being sent</b>` : ''}${['drop_ended', 'drop_nopeer', 'drop_rate'].filter((k) => detail.ingest[k]).map((k) => ` · ${detail.ingest[k]} ${k.slice(5)}`).join('')}` : '–'} <small class="mute">(30 s samples)</small></div>
       <div><span>Avg / max RTT</span>${s.samples ? f1(s.avg_rtt) + ' / ' + f1(s.max_rtt) + ' ms' : '–'}</div><div><span>Packet loss</span>${s.samples ? f1(s.loss_pct) + '%' : '–'}</div><div><span>Via TURN</span>${s.samples ? s.relay_pct + '%' : '–'}</div>
     </div>
     <div class="wrap"><table><thead><tr><th>Peer</th><th>Device</th><th>Page</th><th>Country</th><th>Joined</th><th>Left</th><th class="n">Samples</th><th class="n">Avg RTT ms</th><th class="n">p95 RTT</th><th class="n">Max RTT</th><th class="n">Loss</th><th class="n">TURN</th><th class="n">Avg uplink Mbps</th><th class="n">Sent</th><th>Video</th></tr></thead><tbody>${ps}</tbody></table></div>

@@ -42,6 +42,14 @@
            box-shadow:0 6px 24px #0006; touch-action:none; cursor:grab; user-select:none; -webkit-user-select:none; z-index:2; transition:left .15s, top .15s, right .15s, bottom .15s; }
   .stage:not(.incall) #local { display:none; }
   #local.drag { cursor:grabbing; transition:none; }
+  /* connection quality marks (signal bars): white = good, yellow = degraded, red = poor */
+  .q { position:absolute; z-index:3; display:none; align-items:flex-end; gap:2px; padding:4px 6px; border-radius:8px; background:#0007; backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); pointer-events:none; --qc:#fff; }
+  .stage.incall .q.has { display:flex; }
+  .q i { width:4px; border-radius:1px; background:var(--qc); opacity:.3; }
+  .q i:nth-child(1){height:5px} .q i:nth-child(2){height:8px} .q i:nth-child(3){height:11px} .q i:nth-child(4){height:14px}
+  .q i.on { opacity:1; }
+  .q[data-l="2"] { --qc:#fc3; } .q[data-l="1"] { --qc:#f44; }
+  #flip { display:none; }
   #local.mirror { transform:scaleX(-1); }
   /* snap positions: row (t|b) x column (l|c|r); bottom row clears the control bar */
   #local[data-pos^=t] { top:12px; bottom:auto; } #local[data-pos^=b] { bottom:100px; top:auto; }
@@ -115,6 +123,11 @@
   .desktop-only { display:none; }
   @media (hover:hover) and (pointer:fine) and (min-width:801px) { .desktop-only { display:inline-block; } }
 
+  #linkBtn { display:inline-flex; align-items:center; gap:6px; }
+  #linkToast { display:none; position:fixed; z-index:30; left:50%; top:64px; transform:translateX(-50%); max-width:calc(100% - 24px); padding:10px 14px; border-radius:12px;
+               background:var(--surface); color:var(--fg); border:1px solid var(--line); box-shadow:0 6px 24px #0005; font-size:13px; text-align:center; word-break:break-all; }
+  #linkToast.show { display:block; } #linkToast b { display:block; font-size:12px; color:var(--mute); margin-bottom:2px; }
+
   /* Mobile / touch */
   @media (max-width:800px) {
     /* one compact row: logo | room | Join | theme; status sits in a slim caption line */
@@ -126,7 +139,8 @@
     #room:focus { background:var(--surface); border-color:var(--accent); outline:none; }
     #join { border-radius:999px; padding:8px 18px; }
     #theme { flex:none !important; width:44px; padding:0; justify-content:center; border-radius:50%; }
-    #theme .tl { display:none; }
+    #theme .tl, #linkBtn .tl { display:none; }
+    #linkBtn { flex:none !important; width:44px; padding:0; justify-content:center; border-radius:50%; }
     /* status + timer float over the video as pills so the header stays one row */
     #status, #timer { position:absolute; top:calc(100% + 8px); z-index:4; font-size:12px; line-height:1; padding:6px 10px; border-radius:999px; max-width:calc(100% - 100px);
                       background:#0008; color:#fff; backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; pointer-events:none; }
@@ -136,6 +150,7 @@
     .controls { gap:8px; padding:8px 10px; }
     .rbtn { width:46px; height:46px; } .rbtn.leave { width:60px; }
     #fsBtn { display:none; }
+    body.touch #flip { display:grid; }
     #gearBtn { display:grid; }
     #settings { position:fixed; left:8px; right:8px; top:auto; bottom:calc(88px + env(safe-area-inset-bottom)); width:auto; max-height:70dvh; overflow:auto; }
     #local { width:28%; max-width:140px; }
@@ -156,6 +171,8 @@
   <h1><img src="/favicon.svg" alt="" width="22" height="22"><span class="brand">AtomConnect</span><span id="ver"></span></h1>
   <input id="room" placeholder="room id" size="14" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="go">
   <button id="join">Join</button>
+  <button id="linkBtn" class="secondary" title="Create invite link (uses room id, or generates one) and copy it" aria-label="Copy invite link"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 007.07 0l3-3a5 5 0 00-7.07-7.07l-1.5 1.5"/><path d="M14 11a5 5 0 00-7.07 0l-3 3a5 5 0 007.07 7.07l1.5-1.5"/></svg><span class="tl">Link</span></button>
+<div id="linkToast" role="status"></div>
   <button id="theme" class="secondary" title="Theme: system / dark / light" aria-label="Theme"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3v18" /><path d="M12 3a9 9 0 010 18z" fill="currentColor"/></svg><span class="tl">Theme: System</span></button>
   <button id="settingsBtn" class="secondary desktop-only" title="Camera, microphone and speaker">Settings</button>
   <span id="status" class="sys">idle</span>
@@ -175,6 +192,8 @@
   <div id="empty">Enter a room id and press Join.<br>Share the same room id with the other person.</div>
   <video id="local" data-pos="br" autoplay playsinline muted></video>
   <div id="stats"></div>
+  <div class="q" id="qRemote" role="img" aria-label="Remote connection quality"><i></i><i></i><i></i><i></i></div>
+  <div class="q" id="qSelf" role="img" aria-label="Your connection quality"><i></i><i></i><i></i><i></i></div>
 
   <aside class="chat" id="chatPanel" aria-label="Chat" aria-hidden="true">
     <div class="ch"><span>Chat</span><button id="chatClose" aria-label="Close chat">&times;</button></div>
@@ -185,6 +204,7 @@
   <div class="controls" id="controls">
     <button class="rbtn" id="mute" title="Mute" aria-label="Mute"><svg class="main" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0014 0v-1M12 18v4"/></svg><svg class="alt" viewBox="0 0 24 24"><path d="M1 1l22 22M9 9v2a3 3 0 005.1 2.1M15 9.3V5a3 3 0 00-5.9-.7M17 16.9A7 7 0 015 11v-1M19 10v1a7 7 0 01-.1 1.2M12 18v4"/></svg></button>
     <button class="rbtn" id="cam" title="Camera" aria-label="Camera"><svg class="main" viewBox="0 0 24 24"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg><svg class="alt" viewBox="0 0 24 24"><path d="M16 16v1a2 2 0 01-2 2H3a2 2 0 01-2-2V7a2 2 0 012-2h2m5.7 0H14a2 2 0 012 2v3.3l1 1L23 7v10M1 1l22 22"/></svg></button>
+    <button class="rbtn" id="flip" title="Flip camera" aria-label="Flip camera"><svg class="main" viewBox="0 0 24 24"><path d="M20 7h-3.2l-1.6-2H8.8L7.2 7H4a2 2 0 00-2 2v9a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M9 13a3 3 0 015-1.7M15 13a3 3 0 01-5 1.7M14 9.5v2h2M10 16.5v-2H8"/></svg></button>
     <button class="rbtn" id="gearBtn" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg></button>
     <button class="rbtn" id="chatBtn" title="Chat" aria-label="Chat"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2v10z"/></svg><span class="dot"></span></button>
     <button class="rbtn" id="fsBtn" title="Fullscreen" aria-label="Fullscreen"><svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 00-2 2v3M21 8V5a2 2 0 00-2-2h-3M3 16v3a2 2 0 002 2h3M16 21h3a2 2 0 002-2v-3"/></svg></button>
@@ -195,7 +215,7 @@
 const $ = (id) => document.getElementById(id);
 // Version: bump on each release. Deployed copy also served as /version.json
 // ({"version": "..."}) so open tabs can detect a newer deploy.
-const VERSION = '0.9.10';
+const VERSION = '0.9.11';
 const BUILD = '2026-11-19';
 $('ver').textContent = ' v' + VERSION;
 $('ver').title = `build ${BUILD}`;
@@ -224,9 +244,26 @@ const setStatus = (t) => $('status').textContent = t;
 
 let ws, pc, dc, stream, statsTimer, remoteViewport = null, myId = null, peerId = null;
 // Telemetry counters reported to the admin dashboard (see reportStats)
-let iceRestarts = 0, wsReconnects = 0, reportTimer = null, prevPk = { lost: 0, recv: 0, tx: 0, rx: 0 };
+let iceRestarts = 0, wsReconnects = 0, reportTimer = null, reportSeq = 0, reportSkips = 0;
 
 $('room').value = location.hash.slice(1) || Math.random().toString(36).slice(2, 8);
+
+// Invite link: uses the typed room id, or generates one when empty; copies and shows the link
+let linkTimer = null;
+$('linkBtn').onclick = async () => {
+  let room = $('room').value.trim();
+  if (!room) room = $('room').value = Math.random().toString(36).slice(2, 8);
+  if (!/^[\w-]{1,64}$/.test(room)) return alert('room: letters, digits, - or _');
+  const url = `${location.origin}${location.pathname}#${room}`;
+  let copied = false;
+  try { await navigator.clipboard.writeText(url); copied = true; } catch {
+    const t = document.createElement('textarea'); t.value = url; t.style.cssText = 'position:fixed;opacity:0'; document.body.append(t); t.select();
+    try { copied = document.execCommand('copy'); } catch {} t.remove();
+  }
+  const el = $('linkToast'); el.innerHTML = ''; const b = document.createElement('b'); b.textContent = copied ? 'Link copied to clipboard' : 'Copy this link';
+  el.append(b, url); el.classList.add('show');
+  clearTimeout(linkTimer); linkTimer = setTimeout(() => el.classList.remove('show'), 6000);
+};
 
 async function join() {
   const room = $('room').value.trim();
@@ -256,7 +293,7 @@ function connectWs(room, ice, attempt) {
       const wait = Math.min(1000 * 2 ** attempt, 8000);
       setStatus(`server disconnected, reconnecting (${attempt + 1}/8)...`);
       setTimeout(async () => { if (ws === sock && stream) connectWs(room, await fetchIce().catch(() => ice), attempt + 1); }, wait);
-    } else { leave(true); setStatus('server disconnected'); }
+    } else { leave(true).then(() => setStatus('server disconnected')); }
   };
   sock.onmessage = (e) => onSignal(JSON.parse(e.data), ice);
 }
@@ -264,14 +301,14 @@ function connectWs(room, ice, attempt) {
 let pingTimer = null;
 function setInterval_ping() { clearInterval(pingTimer); pingTimer = setInterval(() => { if (!ws || ws.readyState !== 1) return clearInterval(pingTimer); ws.send('{"type":"ping"}'); }, 30000); }
 
-const send = (m) => ws && ws.readyState === 1 && ws.send(JSON.stringify(m));
+const send = (m) => { if (!ws || ws.readyState !== 1) return false; ws.send(JSON.stringify(m)); return true; };
 
 async function onSignal(m, ice) {
   switch (m.type) {
     case 'welcome': myId = m.id; if (m.peers.length) { peerId = m.peers[0]; if (pc && pc.connectionState === 'connected') { log('rejoined, call still up', 'sys'); break; } setStatus('peer present, waiting for offer'); newPc(ice, false); } break;
     case 'peer-joined': peerId = m.id; if (pc && pc.connectionState === 'connected') { log('peer rejoined signaling, call still up', 'sys'); break; } log('peer joined', 'sys'); newPc(ice, true); await makeOffer(); break;
     case 'peer-left': if (m.id !== peerId) break; if (pc && pc.connectionState === 'connected') { log('peer signaling dropped, call still up', 'sys'); peerId = null; break; } log('peer left', 'sys'); setStatus('peer left, waiting'); closePc(); peerId = null; break;
-    case 'hangup': log('peer ended the call', 'sys'); leave(true); setStatus('peer ended the call'); break;
+    case 'hangup': log('peer ended the call', 'sys'); leave(true).then(() => setStatus('peer ended the call')); break; // leave() awaits a final stats report first
     case 'restart-request': log('peer asked for ICE restart', 'sys'); restartIce('peer request'); break;
     case 'offer':
       if (!pc || m.fresh) { log(m.fresh ? 'peer rebuilt the connection' : 'new offer', 'sys'); newPc(m.fresh ? await fetchIce() : ice, false); }
@@ -317,7 +354,7 @@ async function restartIce(reason) {
 function newPc(ice, initiator) {
   closePc();
   isInitiator = initiator;
-  pc = new RTCPeerConnection(ice); prevPk = { lost: 0, recv: 0, tx: 0, rx: 0 };
+  pc = new RTCPeerConnection(ice);
   stream.getTracks().forEach((t) => pc.addTrack(t, stream));
   pc.onicecandidate = (e) => e.candidate && send({ type: 'ice', candidate: e.candidate, to: peerId });
   pc.ontrack = (e) => { $('remote').srcObject = e.streams[0]; };
@@ -359,9 +396,16 @@ let sendBitrate = 0;
 // Which path the media takes: relay = TURN, srflx/prflx = direct via STUN-discovered address, host = same network
 let route = '';
 const showCallStatus = () => pc && setStatus('call: ' + pc.connectionState + (route ? ' · ' + route : ''));
-function routeOf(stats) {
+// The pair carrying media: the transport's selected pair, else any nominated+succeeded one
+// (the controlled side does not always flag 'nominated', which left RTT/uplink at 0 in some samples)
+function selectedPair(stats) {
   let pair;
-  stats.forEach((r) => { if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated) pair = r; });
+  stats.forEach((r) => { if (r.type === 'transport' && r.selectedCandidatePairId && stats.get(r.selectedCandidatePairId)) pair = stats.get(r.selectedCandidatePairId); });
+  if (!pair) stats.forEach((r) => { if (r.type === 'candidate-pair' && r.state === 'succeeded' && (r.nominated || r.selected)) pair = r; });
+  return pair;
+}
+function routeOf(stats) {
+  const pair = selectedPair(stats);
   if (!pair) return '';
   const l = stats.get(pair.localCandidateId), r = stats.get(pair.remoteCandidateId);
   const types = [l && l.candidateType, r && r.candidateType];
@@ -373,37 +417,87 @@ function routeOf(stats) {
 // Quality telemetry for the admin dashboard: one sample every 30s over the signaling socket.
 // Loss/recv are per-interval deltas; the server stores samples, they never go to the other peer.
 const REPORT_MS = 30000;
-async function reportStats() {
-  if (!pc || pc.connectionState !== 'connected') return;
-  const s = await pc.getStats(); let rtt = 0, kbps = 0, lost = 0, recv = 0, jit = 0, w = 0, h = 0, fps = 0, tx = 0, rx = 0;
+// target defaults to the live connection; closePc passes the one it is about to close.
+// Counters live on the connection (_prev), so a final report for an old pc never mixes with a new one.
+// sn/sk are cumulative report/skip counts: the admin compares them with what the server stored.
+async function reportStats(target = pc) {
+  if (!target || target.connectionState !== 'connected') { reportSkips++; return; }
+  const s = await target.getStats(); let rtt = 0, kbps = 0, lost = 0, recv = 0, jit = 0, w = 0, h = 0, fps = 0, tx = 0, rx = 0;
+  const pair = selectedPair(s);
+  if (pair) { rtt = (pair.currentRoundTripTime || 0) * 1000; kbps = (pair.availableOutgoingBitrate || 0) / 1000; }
   s.forEach((r) => {
     if (r.type === 'outbound-rtp') tx += (r.bytesSent || 0) + (r.headerBytesSent || 0);
-    if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated) { rtt = (r.currentRoundTripTime || 0) * 1000; kbps = (r.availableOutgoingBitrate || 0) / 1000; }
     if (r.type === 'inbound-rtp') {
       lost += r.packetsLost || 0; recv += r.packetsReceived || 0; rx += (r.bytesReceived || 0) + (r.headerBytesReceived || 0);
       if (r.kind === 'audio') jit = (r.jitter || 0) * 1000;
       if (r.kind === 'video') { w = r.frameWidth || 0; h = r.frameHeight || 0; fps = r.framesPerSecond || 0; }
     }
   });
-  const dLost = Math.max(0, lost - prevPk.lost), dRecv = Math.max(0, recv - prevPk.recv);
-  const dTx = Math.max(0, tx - prevPk.tx), dRx = Math.max(0, rx - prevPk.rx);
-  prevPk = { lost, recv, tx, rx };
-  send({ type: 'stats', rtt, kbps, lost: dLost, recv: dRecv, tx: dTx, rx: dRx, jit, w, h, fps, relay: routeOf(s).startsWith('TURN') ? 1 : 0, ice: pc.iceConnectionState, ir: iceRestarts, wsr: wsReconnects });
+  const p = target._prev || { lost: 0, recv: 0, tx: 0, rx: 0 };
+  const cur = { lost, recv, tx, rx };
+  const sent = send({ type: 'stats', rtt, kbps, lost: Math.max(0, lost - p.lost), recv: Math.max(0, recv - p.recv), tx: Math.max(0, tx - p.tx), rx: Math.max(0, rx - p.rx), jit, w, h, fps, relay: routeOf(s).startsWith('TURN') ? 1 : 0, ice: target.iceConnectionState, ir: iceRestarts, wsr: wsReconnects, sn: reportSeq + 1, sk: reportSkips });
+  if (sent) { reportSeq++; target._prev = cur; } // an unsent report keeps its bytes for the next one
+  else reportSkips++;
 }
+// Quality marks: 1-4 bars from loss, RTT, jitter, resolution, fps and sender limits (white >=3, yellow 2, red 1)
+let qPrev = null;
+function setQ(id, lvl, tip) {
+  const el = $(id); if (!lvl) { el.classList.remove('has'); return; }
+  el.dataset.l = lvl; el.title = tip; el.setAttribute('aria-label', tip);
+  [...el.children].forEach((b, i) => b.classList.toggle('on', i < lvl));
+  el.classList.add('has'); placeQ();
+}
+function updateQuality(stats, rtt, avail) {
+  let inb, out, rin;
+  stats.forEach((r) => {
+    if (r.kind !== 'video') return;
+    if (r.type === 'inbound-rtp') inb = r; else if (r.type === 'outbound-rtp') out = r; else if (r.type === 'remote-inbound-rtp') rin = r;
+  });
+  const rttPen = rtt > 400 ? 2 : rtt > 200 ? 1 : 0;
+  const resPen = (h) => (!h ? 0 : h < 240 ? 2 : h < 360 ? 1 : 0);
+  const lossPen = (f) => (f > 0.1 ? 3 : f > 0.03 ? 2 : f > 0.01 ? 1 : 0);
+  if (inb) {
+    const dl = inb.packetsLost - (qPrev ? qPrev.lost : 0), dr = inb.packetsReceived - (qPrev ? qPrev.recv : 0);
+    qPrev = { lost: inb.packetsLost, recv: inb.packetsReceived };
+    const frac = dr + dl > 0 ? Math.max(0, dl) / (dr + dl) : 0;
+    let sc = 4 - lossPen(frac) - rttPen - resPen(inb.frameHeight) - ((inb.jitter || 0) > 0.08 ? 1 : 0) - (inb.framesPerSecond && inb.framesPerSecond < 10 ? 1 : 0);
+    setQ('qRemote', Math.min(4, Math.max(1, sc)), `Incoming: ${inb.frameWidth || '?'}x${inb.frameHeight || '?'}, loss ${(frac * 100).toFixed(1)}%, RTT ${rtt.toFixed(0)} ms`);
+  } else setQ('qRemote', 0);
+  if (out) {
+    const lim = out.qualityLimitationReason && out.qualityLimitationReason !== 'none' ? 1 : 0;
+    const sc = 4 - lossPen(rin ? rin.fractionLost || 0 : 0) - rttPen - resPen(out.frameHeight) - lim - (avail && avail < 300000 ? 1 : 0);
+    setQ('qSelf', Math.min(4, Math.max(1, sc)), `Outgoing: ${out.frameWidth || '?'}x${out.frameHeight || '?'}, loss ${((rin ? rin.fractionLost || 0 : 0) * 100).toFixed(1)}%${lim ? ', limited by ' + out.qualityLimitationReason : ''}`);
+  } else setQ('qSelf', 0);
+}
+// Keep the marks in the bottom-left corner of each picture (self view moves, so follow its rect)
+function placeQ() {
+  const st = $('stage').getBoundingClientRect(), l = $('local').getBoundingClientRect(), qs = $('qSelf'), qr = $('qRemote');
+  qs.style.left = (l.left - st.left + 6) + 'px'; qs.style.top = (l.bottom - st.top - qs.offsetHeight - 6) + 'px';
+  const rh = qr.offsetHeight, base = st.height - (matchMedia('(max-width:800px)').matches ? 90 : 100) - rh;
+  let top = base; const rl = 12, rw = qr.offsetWidth;
+  const hit = l.width && l.left - st.left < rl + rw + 6 && l.top - st.top < top + rh && l.bottom - st.top > top;
+  if (hit) top = l.top - st.top - rh - 6;
+  qr.style.left = rl + 'px'; qr.style.top = top + 'px';
+}
+let qRaf = 0;
+function trackQ(ms = 400) { cancelAnimationFrame(qRaf); const end = performance.now() + ms; const f = () => { placeQ(); if (performance.now() < end) qRaf = requestAnimationFrame(f); }; f(); }
+['transitionrun', 'transitionend', 'pointermove', 'pointerup'].forEach((ev) => $('local').addEventListener(ev, () => trackQ(ev === 'transitionrun' ? 300 : 50)));
+addEventListener('resize', () => trackQ(100)); $('local').addEventListener('loadedmetadata', () => trackQ(100));
 function startStats() {
-  clearInterval(reportTimer); reportTimer = setInterval(() => reportStats().catch(() => {}), REPORT_MS);
+  if (!reportTimer) reportTimer = setInterval(() => reportStats().catch(() => {}), REPORT_MS); // keep the phase across 'connected' flaps
   clearInterval(statsTimer);
   statsTimer = setInterval(async () => {
     if (!pc) return;
     const s = await pc.getStats(); let rtt = 0, avail = 0, out = 0, inb = 0, lost = 0, res = '', relay = false;
     s.forEach((r) => {
-      if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated) { rtt = r.currentRoundTripTime * 1000 || 0; avail = r.availableOutgoingBitrate || 0; }
       if (r.type === 'outbound-rtp' && r.kind === 'video') out = r.bytesSent;
       if (r.type === 'inbound-rtp' && r.kind === 'video') { inb = r.bytesReceived; lost = r.packetsLost; res = `${r.frameWidth || '?'}x${r.frameHeight || '?'}`; }
     });
+    const sp = selectedPair(s); if (sp) { rtt = sp.currentRoundTripTime * 1000 || 0; avail = sp.availableOutgoingBitrate || 0; }
     sendBitrate = avail;
     const rt = routeOf(s); if (rt !== route) { route = rt; showCallStatus(); }
     $('stats').textContent = `RTT ${rtt.toFixed(0)} ms · est. uplink ${(avail / 1e6).toFixed(2)} Mbps · rx ${res} · lost ${lost}`;
+    updateQuality(s, rtt, avail);
     adapt();
   }, 2000);
 }
@@ -439,11 +533,22 @@ function startTimer() {
   tick(); callTimer = setInterval(tick, 1000);
 }
 function stopTimer() { clearInterval(callTimer); callTimer = null; $('timer').textContent = ''; }
-function closePc() { stopTimer(); clearInterval(statsTimer); clearInterval(reportTimer); if (pc) { pc.close(); pc = null; } dc = null; $('remote').srcObject = null; $('stats').textContent = ''; }
-function leave(fromClose) {
+// report=true sends the connection's last partial interval before it is closed (a replaced/dropped pc used to lose it)
+function closePc(report = true) {
+  stopTimer(); clearInterval(statsTimer); clearInterval(reportTimer); reportTimer = null;
+  const old = pc; pc = null; dc = null;
+  if (old) {
+    old.onconnectionstatechange = old.onicecandidate = old.ontrack = old.ondatachannel = null;
+    if (report) reportStats(old).catch(() => {}).finally(() => old.close()); else old.close();
+  }
+ $('remote').srcObject = null; $('stats').textContent = ''; qPrev = null; setQ('qRemote', 0); setQ('qSelf', 0);
+}
+async function leave(fromClose) {
+  // last partial interval first (needs the socket still open); bounded so hang-up never feels stuck
+  if (pc && ws && ws.readyState === 1) await Promise.race([reportStats().catch(() => {}), new Promise((r) => setTimeout(r, 700))]);
   if (!fromClose) send({ type: 'hangup' }); // the hang-up button ends the call for the counterpart too
   const w = ws; ws = null; if (w && !fromClose) w.close(); else if (w) try { w.close(); } catch {}
-  closePc(); if (stream) stream.getTracks().forEach((t) => t.stop()); stream = null; $('local').srcObject = null; releaseAwake();
+  closePc(false); if (stream) stream.getTracks().forEach((t) => t.stop()); stream = null; $('local').srcObject = null; releaseAwake();
   setUi(false); setStatus('idle');
 }
 function setUi(inCall) {
@@ -457,7 +562,11 @@ const store = { get: (k) => { try { return localStorage.getItem(k); } catch { re
 const lv = $('local');
 const setPos = (p) => { lv.dataset.pos = p; store.set('selfPos', p); };
 if (/^[tb][lcr]$/.test(store.get('selfPos') || '')) lv.dataset.pos = store.get('selfPos');
-const setMirror = (on) => { lv.classList.toggle('mirror', on); $('mirror').checked = on; store.set('selfMirror', on ? '1' : '0'); };
+const isTouch = matchMedia('(pointer:coarse)').matches;
+document.body.classList.toggle('touch', isTouch);
+let facing = 'environment'; // mobile default: back camera; Flip button toggles to front
+const applyMirror = () => lv.classList.toggle('mirror', $('mirror').checked && (!isTouch || facing === 'user')); // back camera is never mirrored
+const setMirror = (on) => { $('mirror').checked = on; store.set('selfMirror', on ? '1' : '0'); applyMirror(); };
 setMirror(store.get('selfMirror') !== '0'); // mirrored by default
 $('mirror').onchange = (e) => setMirror(e.target.checked);
 let dragOff = null;
@@ -498,7 +607,7 @@ $('theme').onclick = () => applyTheme(THEMES[(THEMES.indexOf(store.get('theme'))
 
 // Device settings (desktop): camera, microphone, speaker
 const audioConstraints = () => { const id = store.get('micId'); return { echoCancellation: true, noiseSuppression: true, autoGainControl: true, ...(id && { deviceId: { exact: id } }) }; };
-const videoConstraints = () => { const id = store.get('camId'); return { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, ...(id && { deviceId: { exact: id } }) }; };
+const videoConstraints = () => { const id = store.get('camId'); return { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, ...(id ? { deviceId: { exact: id } } : isTouch && { facingMode: { ideal: facing } }) }; };
 $('gearBtn').onclick = $('settingsBtn').onclick = (e) => { e.stopPropagation(); $('settings').classList.toggle('open'); refreshDevices(); };
 $('settingsClose').onclick = () => $('settings').classList.remove('open');
 document.addEventListener('click', (e) => { if (!$('settings').contains(e.target)) $('settings').classList.remove('open'); });
@@ -531,6 +640,11 @@ async function switchInput(kind, deviceId) {
     refreshDevices();
   } catch (e) { log(`Could not switch ${kind === 'video' ? 'camera' : 'microphone'}: ${e.name}`, 'sys'); }
 }
+$('flip').onclick = async () => {
+  facing = facing === 'environment' ? 'user' : 'environment';
+  await switchInput('video', '');
+  applyMirror();
+};
 $('selCam').onchange = (e) => switchInput('video', e.target.value);
 $('selMic').onchange = (e) => switchInput('audio', e.target.value);
 $('selSpk').onchange = async (e) => { store.set('spkId', e.target.value); try { await $('remote').setSinkId(e.target.value); } catch (err) { log('Could not set speaker: ' + err.name, 'sys'); } };
