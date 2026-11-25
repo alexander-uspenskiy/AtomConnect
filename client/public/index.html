@@ -249,8 +249,8 @@
 const $ = (id) => document.getElementById(id);
 // Version: bump on each release. Deployed copy also served as /version.json
 // ({"version": "..."}) so open tabs can detect a newer deploy.
-const VERSION = '0.9.19';
-const BUILD = '2026-11-19';
+const VERSION = '0.9.20';
+const BUILD = '2026-11-25';
 $('ver').textContent = ' v' + VERSION;
 $('ver').title = `build ${BUILD}`;
 console.info('AtomConnect client v' + VERSION);
@@ -259,7 +259,7 @@ async function checkVersion() {
     const r = await fetch('/version.json', { cache: 'no-store' }); if (!r.ok) return;
     const { version } = await r.json();
     if (version && version !== VERSION) $('update').style.display = 'flex';
-  } catch {}
+  } catch (_e) {}
 }
 $('reload').onclick = () => location.reload();
 checkVersion(); setInterval(checkVersion, 5 * 60e3);
@@ -267,8 +267,8 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) { ch
 
 // Keep screen on during a call (mobile)
 let wakeLock = null;
-async function keepAwake() { try { if ('wakeLock' in navigator) { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.onrelease = () => wakeLock = null; } } catch {} }
-function releaseAwake() { try { wakeLock && wakeLock.release(); } catch {} wakeLock = null; }
+async function keepAwake() { try { if ('wakeLock' in navigator) { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.onrelease = () => wakeLock = null; } } catch (_e) {} }
+function releaseAwake() { try { wakeLock && wakeLock.release(); } catch (_e) {} wakeLock = null; }
 
 // Signaling server (override with ?server=host)
 const SERVER = new URLSearchParams(location.search).get('server') || 'atomconnect-signaling.atomhealth.workers.dev';
@@ -290,9 +290,9 @@ $('linkBtn').onclick = async () => {
   if (!/^[\w-]{1,64}$/.test(room)) return alert('room: letters, digits, - or _');
   const url = `${location.origin}${location.pathname}#${room}`;
   let copied = false;
-  try { await navigator.clipboard.writeText(url); copied = true; } catch {
+  try { await navigator.clipboard.writeText(url); copied = true; } catch (_e) {
     const t = document.createElement('textarea'); t.value = url; t.style.cssText = 'position:fixed;opacity:0'; document.body.append(t); t.select();
-    try { copied = document.execCommand('copy'); } catch {} t.remove();
+    try { copied = document.execCommand('copy'); } catch (_e) {} t.remove();
   }
   const el = $('linkToast'); el.innerHTML = ''; const b = document.createElement('b'); b.textContent = copied ? 'Link copied to clipboard' : 'Copy this link';
   el.append(b, url); el.classList.add('show');
@@ -303,10 +303,10 @@ const mobileMq = matchMedia('(max-width:800px)');
 function enterFs() { // must run inside the tap handler; iPhone Safari has no element fullscreen, there the hidden bars are the fallback
   if (!mobileMq.matches || !isTouch) return;
   const d = document.documentElement, f = d.requestFullscreen || d.webkitRequestFullscreen;
-  try { const r = f && f.call(d, { navigationUI: 'hide' }); r && r.catch && r.catch(() => {}); } catch {}
-  try { screen.orientation && screen.orientation.lock && screen.orientation.lock('any').catch(() => {}); } catch {}
+  try { const r = f && f.call(d, { navigationUI: 'hide' }); r && r.catch && r.catch(() => {}); } catch (_e) {}
+  try { screen.orientation && screen.orientation.lock && screen.orientation.lock('any').catch(() => {}); } catch (_e) {}
 }
-function exitFs() { try { if (document.fullscreenElement) document.exitFullscreen(); else if (document.webkitFullscreenElement) document.webkitExitFullscreen(); } catch {} }
+function exitFs() { try { if (document.fullscreenElement) document.exitFullscreen(); else if (document.webkitFullscreenElement) document.webkitExitFullscreen(); } catch (_e) {} }
 async function join() {
   prepSound();
   const room = $('room').value.trim();
@@ -356,7 +356,7 @@ async function onSignal(m, ice) {
     case 'restart-request': log('peer asked for ICE restart', 'sys'); restartIce('peer request'); break;
     case 'offer':
       if (!pc || m.fresh) { log(m.fresh ? 'peer rebuilt the connection' : 'new offer', 'sys'); newPc(await fetchIce().catch(() => ice), false); }
-      await pc.setRemoteDescription(m); await pc.setLocalDescription(); send({ type: 'answer', sdp: pc.localDescription.sdp, to: m.from }); break;
+      await pc.setRemoteDescription(m); await setLocal(pc.signalingState === 'have-remote-offer'); send({ type: 'answer', sdp: pc.localDescription.sdp, to: m.from }); break;
     case 'answer': if (pc) await pc.setRemoteDescription({ type: 'answer', sdp: m.sdp }); break;
     case 'ice': if (pc && m.candidate) try { await pc.addIceCandidate(m.candidate); } catch (e) { console.warn(e); } break;
   }
@@ -416,7 +416,12 @@ function newPc(ice, initiator) {
   if (initiator) setupChannel(pc.createDataChannel('chat'));
   else pc.ondatachannel = (e) => setupChannel(e.channel);
 }
-async function makeOffer(fresh) { await pc.setLocalDescription(); send({ type: 'offer', sdp: pc.localDescription.sdp, to: peerId, ...(fresh && { fresh: true }) }); }
+// Argument-less setLocalDescription() needs Chrome 80+/Firefox 75+; older browsers (e.g. Windows 7 era) need an explicit offer/answer.
+async function setLocal(answer) {
+  try { await pc.setLocalDescription(); if (pc.localDescription && pc.localDescription.sdp) return; } catch (_e) {}
+  await pc.setLocalDescription(await (answer ? pc.createAnswer() : pc.createOffer()));
+}
+async function makeOffer(fresh) { await setLocal(pc.signalingState === 'have-remote-offer'); send(Object.assign({ type: 'offer', sdp: pc.localDescription.sdp, to: peerId }, fresh ? { fresh: true } : {})); }
 
 function setupChannel(ch) {
   dc = ch;
@@ -426,7 +431,7 @@ function setupChannel(ch) {
   dc.onclose = () => { chatEnable(false); abortTransfers('connection closed'); };
   dc.onmessage = (e) => {
     if (typeof e.data !== 'string') return onFileChunk(e.data);
-    let m; try { m = JSON.parse(e.data); } catch { return; }
+    let m; try { m = JSON.parse(e.data); } catch (_e) { return; }
     if (m.type === 'chat') { log(m.text, 'peer'); notifyNew(); }
     if (m.type === 'viewport') { remoteViewport = m; adapt(); }
     if (m.type === 'screen') log(m.on ? 'peer is sharing their screen' : 'peer stopped sharing their screen', 'sys');
@@ -438,7 +443,7 @@ function setupChannel(ch) {
 // New-message alert: bar wakes up, chat button changes colour/shakes (see .has-new), and a short quiet beep.
 // The AudioContext is created on the Join click (browsers only allow sound after a gesture).
 let audioCtx = null, lastBeep = 0;
-function prepSound() { try { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); audioCtx.resume(); } catch {} }
+function prepSound() { try { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); audioCtx.resume(); } catch (_e) {} }
 function beep() {
   const now = Date.now(); if (!audioCtx || now - lastBeep < 800) return; lastBeep = now;
   try {
@@ -446,7 +451,7 @@ function beep() {
     o.type = 'sine'; o.frequency.setValueAtTime(880, t); o.frequency.setValueAtTime(1175, t + 0.09); // two quick rising notes
     g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.06, t + 0.015); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.2); // peak 6%: audible, not loud
     o.connect(g).connect(audioCtx.destination); o.start(t); o.stop(t + 0.22);
-  } catch {}
+  } catch (_e) {}
 }
 function notifyNew(sound = true) {
   const seen = chatOpen() && document.hasFocus();
@@ -482,7 +487,7 @@ function addPreview(ui, name, src) {
   };
   ui.p.insertBefore(img, ui.bar);
 }
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') document.getElementById('lightbox')?.remove(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') (document.getElementById('lightbox') || { remove() {} }).remove(); });
 const fileFail = (ui, why) => { ui.bar.remove(); ui.st.textContent = 'failed: ' + why; };
 function sendFile(file) {
   if (!dc || dc.readyState !== 'open') return log('Not connected to a peer yet: cannot send files', 'sys');
@@ -511,7 +516,7 @@ async function doSend(file) {
     }
     ch.send(JSON.stringify({ type: 'file-end', id }));
     ui.bar.remove(); ui.st.textContent = 'sent';
-  } catch (e) { fileFail(ui, e.message); try { if (ch.readyState === 'open') ch.send(JSON.stringify({ type: 'file-end', id, abort: true })); } catch {} }
+  } catch (e) { fileFail(ui, e.message); try { if (ch.readyState === 'open') ch.send(JSON.stringify({ type: 'file-end', id, abort: true })); } catch (_e) {} }
   finally { if (sending === job) sending = null; }
 }
 function onFileStart(m) {
@@ -716,7 +721,7 @@ async function adapt() {
     const w = sender.track.getSettings().width || 1280;
     scale = Math.min(4, Math.max(1, w / Math.max(need, 320)));
   }
-  const max = sendBitrate ? Math.min(2_500_000, Math.max(150_000, sendBitrate * 0.85)) : 2_500_000;
+  const max = sendBitrate ? Math.min(2500000, Math.max(150000, sendBitrate * 0.85)) : 2500000;
   const e = p.encodings[0];
   if (Math.abs((e.scaleResolutionDownBy || 1) - scale) > 0.2 || Math.abs((e.maxBitrate || 0) - max) > max * 0.2) {
     e.scaleResolutionDownBy = scale; e.maxBitrate = max;
@@ -760,7 +765,7 @@ async function leave(fromClose) {
   // last partial interval first (needs the socket still open); bounded so hang-up never feels stuck
   if (pc && ws && ws.readyState === 1) await Promise.race([reportStats().catch(() => {}), new Promise((r) => setTimeout(r, 700))]);
   if (!fromClose) send({ type: 'hangup' }); // the hang-up button ends the call for the counterpart too
-  const w = ws; ws = null; if (w && !fromClose) w.close(); else if (w) try { w.close(); } catch {}
+  const w = ws; ws = null; if (w && !fromClose) w.close(); else if (w) try { w.close(); } catch (_e) {}
   await stopShare(true); abortTransfers('call ended'); blobUrls.splice(0).forEach((u) => URL.revokeObjectURL(u));
   closePc(false); if (stream) stream.getTracks().forEach((t) => t.stop()); stream = null; $('local').srcObject = null; releaseAwake();
   setUi(false); setStatus('idle');
@@ -772,7 +777,7 @@ function setUi(inCall) {
 }
 
 // Self view: drag to snap to top/bottom x left/center/right; mirror toggle in Settings (default on; both remembered)
-const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+const store = { get: (k) => { try { return localStorage.getItem(k); } catch (_e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (_e) {} } };
 const lv = $('local');
 const setPos = (p) => { lv.dataset.pos = p; store.set('selfPos', p); };
 if (/^[tb][lcr]$/.test(store.get('selfPos') || '')) lv.dataset.pos = store.get('selfPos');
@@ -820,8 +825,8 @@ applyTheme(THEMES.includes(store.get('theme')) ? store.get('theme') : 'system');
 $('theme').onclick = () => applyTheme(THEMES[(THEMES.indexOf(store.get('theme')) + 1) % 3]);
 
 // Device settings (desktop): camera, microphone, speaker
-const audioConstraints = () => { const id = store.get('micId'); return { echoCancellation: true, noiseSuppression: true, autoGainControl: true, ...(id && { deviceId: { exact: id } }) }; };
-const videoConstraints = () => { const id = store.get('camId'); return { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, ...(id ? { deviceId: { exact: id } } : isTouch && { facingMode: { ideal: facing } }) }; };
+const audioConstraints = () => { const id = store.get('micId'); return Object.assign({ echoCancellation: true, noiseSuppression: true, autoGainControl: true }, id ? { deviceId: { exact: id } } : {}); };
+const videoConstraints = () => { const id = store.get('camId'); return Object.assign({ width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }, id ? { deviceId: { exact: id } } : isTouch ? { facingMode: { ideal: facing } } : {}); };
 $('gearBtn').onclick = $('settingsBtn').onclick = (e) => { e.stopPropagation(); $('settings').classList.toggle('open'); refreshDevices(); };
 $('settingsClose').onclick = () => $('settings').classList.remove('open');
 document.addEventListener('click', (e) => { if (!$('settings').contains(e.target)) $('settings').classList.remove('open'); });
@@ -836,7 +841,7 @@ async function refreshDevices() {
   };
   fill($('selCam'), 'videoinput', 'camId', 'Camera'); fill($('selMic'), 'audioinput', 'micId', 'Microphone'); fill($('selSpk'), 'audiooutput', 'spkId', 'Speaker');
 }
-if (navigator.mediaDevices) navigator.mediaDevices.addEventListener?.('devicechange', refreshDevices);
+if (navigator.mediaDevices) navigator.mediaDevices.addEventListener && navigator.mediaDevices.addEventListener('devicechange', refreshDevices);
 refreshDevices();
 if (!('setSinkId' in HTMLMediaElement.prototype)) $('spkWrap').style.display = 'none';
 
