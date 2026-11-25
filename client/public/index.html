@@ -246,10 +246,27 @@
 </div>
 <footer id="contact"><b>Alex Uspenskiy</b><a href="mailto:alexander.uspensky@gmail.com">alexander.uspensky@gmail.com</a><a href="https://github.com/alexander-uspenskiy/AtomConnect" target="_blank" rel="noopener">GitHub</a><a href="https://alexander-uspenskiy.github.io/AtomConnect/" target="_blank" rel="noopener">Site</a></footer>
 <script>
+// ES5-only startup guard: if the main script can't parse/run (old browser), say so instead of leaving a dead page.
+(function () {
+  var err = '';
+  function banner() {
+    if (window.__acReady || document.getElementById('acfail')) return;
+    var d = document.createElement('div'); d.id = 'acfail';
+    d.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:99999;background:#b00020;color:#fff;font:14px/1.4 sans-serif;padding:10px 14px';
+    var ok = !!(window.RTCPeerConnection || window.webkitRTCPeerConnection);
+    d.appendChild(document.createTextNode('AtomConnect could not start in this browser' + (ok ? '' : ' (no WebRTC support)') + '. Please use a current Chrome, Edge or Firefox. ' +
+      (err ? 'Error: ' + err + ' ' : '') + '[' + navigator.userAgent + ']'));
+    (document.body || document.documentElement).appendChild(d);
+  }
+  window.onerror = function (m, u, l, c) { if (!err) err = m + ' (line ' + l + ':' + c + ')'; };
+  window.addEventListener('load', function () { setTimeout(banner, 300); });
+})();
+</script>
+<script>
 const $ = (id) => document.getElementById(id);
 // Version: bump on each release. Deployed copy also served as /version.json
 // ({"version": "..."}) so open tabs can detect a newer deploy.
-const VERSION = '0.9.20';
+const VERSION = '0.9.21';
 const BUILD = '2026-11-25';
 $('ver').textContent = ' v' + VERSION;
 $('ver').title = `build ${BUILD}`;
@@ -906,6 +923,7 @@ $('leave').onclick = () => leave();
 $('mute').onclick = () => { const t = stream.getAudioTracks()[0]; t.enabled = !t.enabled; $('mute').classList.toggle('off', !t.enabled); $('mute').title = t.enabled ? 'Mute' : 'Unmute'; };
 $('cam').onclick = () => { const t = stream.getVideoTracks()[0]; t.enabled = !t.enabled; $('cam').classList.toggle('off', !t.enabled); $('cam').title = t.enabled ? 'Turn camera off' : 'Turn camera on'; };
 $('chat').onsubmit = (e) => { e.preventDefault(); const text = $('msg').value.trim(); if (!text || !dc || dc.readyState !== 'open') return; dc.send(JSON.stringify({ type: 'chat', text })); log(text, 'me'); $('msg').value = ''; };
+window.__acReady = true;
 </script>
 </body>
 </html>
