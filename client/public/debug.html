@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AtomConnect debug</title>
+<style>body{font:14px/1.4 sans-serif;margin:16px;max-width:900px}textarea{width:100%;height:420px;font:12px monospace}button{padding:8px 14px;font-size:14px}</style>
+</head><body>
+<h2>AtomConnect diagnostics</h2>
+<p>Wait ~5 seconds, then press <b>Select all</b>, copy the text below and send it back.</p>
+<button id="sel" type="button">Select all</button>
+<textarea id="out" readonly></textarea>
+<iframe id="fr" style="width:1px;height:1px;border:0;position:absolute;left:-9999px" title="probe"></iframe>
+<script>
+// ES5 only, so it runs on very old browsers too.
+(function () {
+  var out = document.getElementById('out'), lines = [];
+  function p(s) { lines.push(s); out.value = lines.join('\n'); }
+  function can(code) { try { new Function(code); return 'ok'; } catch (e) { return 'FAIL: ' + e.message; } }
+  p('time: ' + new Date().toISOString());
+  p('page: ' + location.href);
+  p('UA: ' + navigator.userAgent);
+  p('online: ' + navigator.onLine + ', cookies: ' + navigator.cookieEnabled);
+  p('--- language support (parse test) ---');
+  p('arrow/const/template: ' + can('const f=(a)=>`${a}`;'));
+  p('async/await: ' + can('async function f(){await 1}'));
+  p('optional catch: ' + can('try{}catch{}'));
+  p('optional chaining ?.: ' + can('var a={};a?.b'));
+  p('object spread: ' + can('var a={...{b:1}}'));
+  p('--- APIs ---');
+  p('RTCPeerConnection: ' + !!(window.RTCPeerConnection || window.webkitRTCPeerConnection));
+  p('getUserMedia: ' + !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia));
+  p('WebSocket: ' + !!window.WebSocket + ', fetch: ' + !!window.fetch + ', URLSearchParams: ' + !!window.URLSearchParams);
+  try { localStorage.setItem('t', '1'); localStorage.removeItem('t'); p('localStorage: ok'); } catch (e) { p('localStorage: FAIL ' + e.message); }
+  p('secure context: ' + window.isSecureContext);
+  var ts = Date.now();
+  function get(url, cb) {
+    var x = new XMLHttpRequest(); x.open('GET', url, true);
+    x.onload = function () { cb(null, x); }; x.onerror = function () { cb(new Error('network error'), x); };
+    x.send();
+  }
+  get('/version.json?nc=' + ts, function (e, x) { p('--- network ---'); p('/version.json: ' + (e ? e.message : x.status + ' ' + x.responseText.replace(/\s+/g, ' '))); });
+  get('/?nc=' + ts, function (e, x) {
+    if (e) { p('GET /: ' + e.message); return; }
+    var h = x.responseText;
+    p('GET /: status ' + x.status + ', ' + h.length + ' bytes, type ' + x.getResponseHeader('content-type') + ', encoding ' + x.getResponseHeader('content-encoding'));
+    p('  has 0.9.21: ' + (h.indexOf("'0.9.21'") > -1) + ', has guard: ' + (h.indexOf('acfail') > -1));
+    var re = /<script>([\s\S]*?)<\/script>/g, m, n = 0;
+    while ((m = re.exec(h))) { n++; p('  inline script #' + n + ' (' + m[1].length + ' chars) parse: ' + can(m[1])); }
+    if (!n) p('  NO inline scripts found in response (stripped by proxy/antivirus?)');
+    p('  first 120 chars of <head>: ' + h.slice(h.indexOf('<head>'), h.indexOf('<head>') + 120).replace(/\s+/g, ' '));
+  });
+  // Load the real app in a hidden iframe (fresh URL, no cache) and inspect what it did.
+  var fr = document.getElementById('fr');
+  fr.onload = function () {
+    setTimeout(function () {
+      p('--- app probe (iframe /?nc=...#testroom) ---');
+      try {
+        var d = fr.contentDocument, w = fr.contentWindow;
+        p('ver text: "' + d.getElementById('ver').textContent + '"');
+        p('room value: "' + d.getElementById('room').value + '"');
+        p('join disabled: ' + d.getElementById('join').disabled);
+        p('script finished (__acReady): ' + w.__acReady + ', first error: ' + (w.__acErr || 'none'));
+        p('guard banner shown: ' + !!d.getElementById('acfail'));
+      } catch (e) { p('probe failed: ' + e.message); }
+      p('--- done ---');
+    }, 2500);
+  };
+  fr.src = '/?nc=' + ts + '#testroom';
+  document.getElementById('sel').onclick = function () { out.focus(); out.select(); };
+})();
+</script>
+</body></html>

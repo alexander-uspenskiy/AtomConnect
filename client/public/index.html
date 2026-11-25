@@ -258,7 +258,7 @@
       (err ? 'Error: ' + err + ' ' : '') + '[' + navigator.userAgent + ']'));
     (document.body || document.documentElement).appendChild(d);
   }
-  window.onerror = function (m, u, l, c) { if (!err) err = m + ' (line ' + l + ':' + c + ')'; };
+  window.onerror = function (m, u, l, c) { if (!err) err = window.__acErr = m + ' (line ' + l + ':' + c + ')'; };
   window.addEventListener('load', function () { setTimeout(banner, 300); });
 })();
 </script>
