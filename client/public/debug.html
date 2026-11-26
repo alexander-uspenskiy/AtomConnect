@@ -4,7 +4,7 @@
 <style>body{font:14px/1.4 sans-serif;margin:16px;max-width:900px}textarea{width:100%;height:420px;font:12px monospace}button{padding:8px 14px;font-size:14px}</style>
 </head><body>
 <h2>AtomConnect diagnostics</h2>
-<p>Wait ~5 seconds, then press <b>Select all</b>, copy the text below and send it back.</p>
+<p>Wait until the last line says <b>--- done ---</b> (up to ~30 seconds), then press <b>Select all</b>, copy the text below and send it back.</p>
 <button id="sel" type="button">Select all</button>
 <textarea id="out" readonly></textarea>
 <iframe id="fr" style="width:1px;height:1px;border:0;position:absolute;left:-9999px" title="probe"></iframe>
@@ -34,6 +34,7 @@
   function get(url, cb) {
     var x = new XMLHttpRequest(); x.open('GET', url, true);
     x.onload = function () { cb(null, x); }; x.onerror = function () { cb(new Error('network error'), x); };
+    x.timeout = 20000; x.ontimeout = function () { cb(new Error('TIMEOUT after 20s (request hung; readyState ' + x.readyState + ', status ' + x.status + ')'), x); };
     x.send();
   }
   get('/version.json?nc=' + ts, function (e, x) { p('--- network ---'); p('/version.json: ' + (e ? e.message : x.status + ' ' + x.responseText.replace(/\s+/g, ' '))); });
@@ -63,6 +64,8 @@
       p('--- done ---');
     }, 2500);
   };
+  var probeDone = false; fr.onload = (function (f) { return function () { probeDone = true; f(); }; })(fr.onload);
+  setTimeout(function () { if (!probeDone) p('--- app probe: iframe never finished loading within 25s (readyState unknown) ---'); }, 25000);
   fr.src = '/?nc=' + ts + '#testroom';
   document.getElementById('sel').onclick = function () { out.focus(); out.select(); };
 })();
