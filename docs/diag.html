@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AtomConnect network diagnostics</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="favicon.svg">
+<style>
+  body{font:15px/1.5 "Segoe UI",Arial,sans-serif;margin:0;background:#f6f7f9;color:#0f172a}
+  .w{max-width:860px;margin:0 auto;padding:20px}
+  h1{font-size:22px;margin:8px 0 4px} h2{font-size:17px;margin:22px 0 6px}
+  ol{padding-left:22px} li{margin:4px 0}
+  code,kbd{background:#e6eaf0;padding:1px 5px;border-radius:3px;font:13px Consolas,monospace}
+  .box{background:#fff;border:1px solid #dde2e9;border-radius:8px;padding:12px 16px;margin:12px 0}
+  button,a.b{display:inline-block;padding:9px 16px;font:600 14px "Segoe UI",Arial,sans-serif;border:0;border-radius:6px;background:#0d9488;color:#fff;cursor:pointer;text-decoration:none}
+  a.b.s{background:#64748b}
+  textarea{width:100%;height:300px;font:12px Consolas,monospace;box-sizing:border-box;white-space:pre;overflow:auto}
+  .m{color:#5b6676;font-size:13px} #st{margin-left:10px;font-weight:600}
+  ul{padding-left:22px}
+</style></head><body><div class="w">
+<p class="m"><a href="#" id="lru">Русский</a> | <a href="#" id="len">English</a></p>
+
+<div class="ru">
+<h1>Диагностика сети AtomConnect</h1>
+<p>Небольшой скрипт для Windows, который шаг за шагом проверяет, почему AtomConnect не работает в вашем подключении: DNS, блокировки адресов, TLS, WebSocket, UDP/TURN. Результат &mdash; текстовый файл-отчёт, который вы отправляете разработчику.</p>
+<div class="box"><b>Что делает и чего не делает скрипт.</b> Он только читает настройки системы (версия Windows, прокси, DNS-серверы, корневые сертификаты, имена запущенных программ) и отправляет небольшие тестовые запросы на AtomConnect, Cloudflare, Google, Яндекс и зеркало Ubuntu. Он ничего не устанавливает, не меняет настройки и ничего никуда не отправляет сам: отчёт сохраняется в файл рядом со скриптом, а отправлять его или нет &mdash; решаете вы. Скрипт &mdash; обычный текст, он целиком показан ниже, его можно прочитать до запуска. Имя компьютера, имя пользователя и MAC-адреса в отчёте скрыты. В отчёте будут ваш внешний IP-адрес и название провайдера (ASN): это нужно, чтобы понять, где блокировка.</div>
+<h2>Шаг 1. Получите скрипт (способ А, рекомендуется: ничего не скачивается)</h2>
+<p class="m">Браузеры и антивирусы часто блокируют скачанные файлы .bat. Вставка текста в Блокнот это обходит.</p>
+<ol>
+<li>Нажмите кнопку <b>Копировать скрипт</b> ниже (текст выделится и скопируется).</li>
+<li>Откройте Блокнот: Пуск, введите <code>notepad</code>, Enter. Вставьте текст: <kbd>Ctrl</kbd>+<kbd>V</kbd>.</li>
+<li>Меню <b>Файл, Сохранить как</b>. Внизу в поле <b>Тип файла</b> выберите <b>Все файлы</b>. В поле <b>Имя файла</b> введите <code>atomconnect-diag.bat</code>. Кодировка: ANSI (по умолчанию). Папка: Рабочий стол. Нажмите Сохранить и закройте Блокнот.</li>
+</ol>
+<p class="m">Способ Б: нажмите &laquo;Скачать .txt&raquo;, затем переименуйте файл в <code>atomconnect-diag.bat</code> (если расширения не видны: Проводник, Упорядочить, Параметры папок и поиска, Вид, снимите галочку &laquo;Скрывать расширения для зарегистрированных типов файлов&raquo;).</p>
+<h2>Шаг 2. Запустите</h2>
+<ol>
+<li>Дважды щёлкните <code>atomconnect-diag.bat</code> на Рабочем столе. Если Windows спросит &laquo;Запустить этот файл?&raquo; или покажет предупреждение системы безопасности, нажмите <b>Запустить</b>. Откроется чёрное окно.</li>
+<li>Нажмите <b>Enter</b>, чтобы начать. Проверка идёт примерно 3&ndash;5 минут, в окне бегут строки. <b>Не закрывайте окно</b> и не нажимайте клавиши, пока она идёт. Красные строки &mdash; это нормально: именно так отображаются найденные проблемы.</li>
+<li>Если антивирус заблокировал или удалил файл: <b>не отключайте антивирус</b>, просто напишите разработчику, что именно он сообщил.</li>
+</ol>
+<h2>Шаг 3. Проверка в Chrome (в конце, примерно 1&ndash;2 минуты)</h2>
+<p>Если установлен Chrome, скрипт спросит <code>Run the browser capture now? (Y/n)</code>. Нажмите <b>Enter</b> (да). Откроется Chrome с отдельным чистым профилем (ваши вкладки и пароли не затрагиваются).</p>
+<ol>
+<li>Дождитесь, пока в большом поле на странице появится строка <code>--- done ---</code> (до 40 секунд).</li>
+<li>Нажмите кнопку <b>Select all</b> на странице, затем <kbd>Ctrl</kbd>+<kbd>C</kbd>.</li>
+<li>Вернитесь в чёрное окно и нажмите <b>Enter</b>. Откроется Блокнот: вставьте текст (<kbd>Ctrl</kbd>+<kbd>V</kbd>), сохраните (<kbd>Ctrl</kbd>+<kbd>S</kbd>) и закройте Блокнот.</li>
+<li>Chrome закроется сам (если нет &mdash; закройте его, затем нажмите Enter в чёрном окне).</li>
+</ol>
+<p>Если Chrome не установлен или вы отказались, этот шаг пропускается, это допустимо.</p>
+<h2>Шаг 4. Отправьте результат</h2>
+<p>В конце появится зелёная надпись <b>DONE</b> и откроется папка с файлами (на Рабочем столе). Нужны:</p>
+<ul>
+<li><code>AtomConnect-diag-ДАТА-ВРЕМЯ.txt</code> &mdash; основной отчёт (всегда);</li>
+<li><code>AtomConnect-netlog-ДАТА-ВРЕМЯ.cab</code> &mdash; журнал сети Chrome (если появился).</li>
+</ul>
+<ol>
+<li>Откройте .txt в Блокноте и просмотрите: там нет паролей и ваших файлов, только сетевые настройки и результаты проверок.</li>
+<li>Выделите оба файла, щёлкните правой кнопкой, <b>Отправить, Сжатая ZIP-папка</b>. Получится один .zip.</li>
+<li>Отправьте .zip по почте на <a class="mail" href="mailto:alexander.uspensky@gmail.com?subject=AtomConnect%20diagnostics%20report">alexander.uspensky@gmail.com</a> (тема: AtomConnect diagnostics) или тем мессенджером, которым вы уже общаетесь с разработчиком.</li>
+<li>Если вложения не отправляются: откройте .txt в Блокноте, <kbd>Ctrl</kbd>+<kbd>A</kbd>, <kbd>Ctrl</kbd>+<kbd>C</kbd> и вставьте текст прямо в письмо или сообщение (.cab в этом случае пропустите).</li>
+</ol>
+<h2>Если что-то пошло не так</h2>
+<p>Окно закрылось сразу, появились длинные красные ошибки, скрипт завис больше чем на 10 минут: сделайте фото экрана или скриншот и отправьте вместе с .txt, если он появился (он сохраняется по ходу работы, даже неполный полезен). Можно закрыть окно и запустить скрипт ещё раз.</p>
+</div>
+
+<div class="en">
+<h1>AtomConnect network diagnostics</h1>
+<p>A small Windows script that tests, step by step, why AtomConnect does not work on your connection (DNS, blocked addresses, TLS, WebSocket, UDP/TURN). It produces a text report that you send to the developer.</p>
+<div class="box"><b>What it does and does not do.</b> It only reads system settings (Windows version, proxy, DNS servers, installed root certificates, names of running programs) and sends small test requests to AtomConnect, Cloudflare, Google, Yandex and an Ubuntu mirror. It installs nothing, changes no settings and uploads nothing: the report is saved as a file next to the script and <b>you</b> choose whether to send it. It is plain text, shown in full below, so you can read it first. PC name, user name and MAC addresses are masked. The report does contain your public IP address and ISP (ASN), which is needed to locate the blocking.</div>
+<h2>Step 1. Get the script (option A, recommended: nothing is downloaded)</h2>
+<p class="m">Browsers and antivirus programs often block downloaded <code>.bat</code> files. Pasting the text into Notepad avoids that.</p>
+<ol>
+<li>Click <b>Copy script</b> below (the text is selected and copied).</li>
+<li>Open Notepad (Start, type <code>notepad</code>, Enter) and paste with <kbd>Ctrl</kbd>+<kbd>V</kbd>.</li>
+<li>File, Save As. Set <b>Save as type</b> to <b>All files</b>, file name <code>atomconnect-diag.bat</code>, encoding ANSI (default), folder Desktop. Save and close Notepad.</li>
+</ol>
+<p class="m">Option B: click &ldquo;Download as .txt&rdquo; and rename the file to <code>atomconnect-diag.bat</code> (if extensions are hidden: Explorer, Organize, Folder and search options, View, untick &ldquo;Hide extensions for known file types&rdquo;).</p>
+<h2>Step 2. Run it</h2>
+<ol>
+<li>Double-click <code>atomconnect-diag.bat</code> on the Desktop. If Windows asks &ldquo;Do you want to run this file?&rdquo; or shows a security warning, choose <b>Run</b>. A black window opens.</li>
+<li>Press <b>Enter</b> to start. It takes about 3-5 minutes and prints lines as it goes. <b>Do not close the window</b> or press keys while it runs. Red lines are normal: that is how problems it finds are shown.</li>
+<li>If your antivirus blocks or deletes the file, <b>do not disable the antivirus</b>; just tell the developer what it reported.</li>
+</ol>
+<h2>Step 3. Chrome check (at the end, about 1-2 minutes)</h2>
+<p>If Chrome is installed, the script asks <code>Run the browser capture now? (Y/n)</code>. Press <b>Enter</b> (yes). Chrome opens with a separate clean profile (your tabs and passwords are not touched).</p>
+<ol>
+<li>Wait until the big text box on the page shows <code>--- done ---</code> (up to 40 seconds).</li>
+<li>Click the <b>Select all</b> button on the page, then press <kbd>Ctrl</kbd>+<kbd>C</kbd>.</li>
+<li>Go back to the black window and press <b>Enter</b>. Notepad opens: paste (<kbd>Ctrl</kbd>+<kbd>V</kbd>), save (<kbd>Ctrl</kbd>+<kbd>S</kbd>) and close Notepad.</li>
+<li>Chrome closes by itself (if not, close it and press Enter in the black window).</li>
+</ol>
+<p>If Chrome is not installed or you answer no, this step is skipped; that is fine.</p>
+<h2>Step 4. Send the result</h2>
+<p>At the end a green <b>DONE</b> message appears and the folder with the files opens (the Desktop). You need:</p>
+<ul>
+<li><code>AtomConnect-diag-DATE-TIME.txt</code>: the main report (always);</li>
+<li><code>AtomConnect-netlog-DATE-TIME.cab</code>: Chrome network log (if it was created).</li>
+</ul>
+<ol>
+<li>Open the .txt in Notepad and look through it: it contains no passwords or personal files, only network settings and test results.</li>
+<li>Select both files, right-click, <b>Send to, Compressed (zipped) folder</b>. This gives one .zip.</li>
+<li>Email the .zip to <a class="mail" href="mailto:alexander.uspensky@gmail.com?subject=AtomConnect%20diagnostics%20report">alexander.uspensky@gmail.com</a> (subject: AtomConnect diagnostics) or send it through the messenger you already use with the developer.</li>
+<li>If attachments will not send: open the .txt in Notepad, <kbd>Ctrl</kbd>+<kbd>A</kbd>, <kbd>Ctrl</kbd>+<kbd>C</kbd> and paste the text straight into the email or message (skip the .cab then).</li>
+</ol>
+<h2>If something goes wrong</h2>
+<p>The window closes at once, long red errors appear, or it hangs for more than 10 minutes: take a photo or screenshot of the window and send it, together with the .txt if one exists (it is saved as it goes, so even a partial one helps). You can close the window and run the script again.</p>
+</div>
+
+<h2 id="srch"><span class="ru">Текст скрипта</span><span class="en">The script</span></h2>
+<p><button id="copy" type="button" disabled><span class="ru">Копировать скрипт</span><span class="en">Copy script</span></button> <a class="b s" id="dl" href="atomconnect-diag.txt" download="atomconnect-diag.txt"><span class="ru">Скачать .txt</span><span class="en">Download as .txt</span></a><span id="st"></span></p>
+<textarea id="src" readonly spellcheck="false" wrap="off">Loading...</textarea>
+<p class="m" id="info"></p>
+</div>
+<script>
+// ES5 only, for old browsers.
+(function () {
+  var lang = (navigator.language || navigator.userLanguage || 'en').toLowerCase().indexOf('ru') === 0 ? 'ru' : 'en';
+  function setLang(l) {
+    var all = document.querySelectorAll('.ru,.en');
+    for (var i = 0; i < all.length; i++) all[i].style.display = all[i].className.split(' ')[0] === l ? '' : 'none';
+    st && (st.textContent = '');
+  }
+  var st = document.getElementById('st'), ta = document.getElementById('src'), info = document.getElementById('info'), btn = document.getElementById('copy');
+  var x = new XMLHttpRequest();
+  x.open('GET', 'atomconnect-diag.txt?nc=' + (new Date().getTime()), true);
+  x.onload = function () {
+    if (x.status !== 200) { ta.value = 'Could not load the script (HTTP ' + x.status + '). Use the download link above.'; return; }
+    ta.value = x.responseText; btn.disabled = false;
+    info.textContent = x.responseText.length + ' characters, ' + x.responseText.split('\n').length + ' lines.';
+    try {
+      var b = new Uint8Array(x.responseText.length);
+      for (var i = 0; i < b.length; i++) b[i] = x.responseText.charCodeAt(i) & 255;
+      window.crypto.subtle.digest('SHA-256', b).then(function (h) {
+        var a = new Uint8Array(h), s = '';
+        for (var j = 0; j < a.length; j++) s += (a[j] < 16 ? '0' : '') + a[j].toString(16);
+        info.textContent += ' SHA-256: ' + s;
+      });
+    } catch (e) { }
+  };
+  x.onerror = function () { ta.value = 'Could not load the script. Use the download link above.'; };
+  document.getElementById('lru').onclick = function () { lang = 'ru'; setLang('ru'); return false; };
+  document.getElementById('len').onclick = function () { lang = 'en'; setLang('en'); return false; };
+  setLang(lang);
+  x.send();
+  btn.onclick = function () {
+    ta.focus(); ta.select();
+    var ok = false; try { ok = document.execCommand('copy'); } catch (e) { }
+    var ru = lang === 'ru'; st.textContent = ok ? (ru ? 'Скопировано. Теперь вставьте в Блокнот.' : 'Copied. Now paste it into Notepad.') : (ru ? 'Нажмите Ctrl+C (текст выделен).' : 'Press Ctrl+C to copy (the text is selected).');
+  };
+})();
+</script></body></html>

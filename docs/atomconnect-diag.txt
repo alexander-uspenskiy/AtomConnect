@@ -1,0 +1,1121 @@
+@echo off
+rem AtomConnect network diagnostics for Windows 7+ (PowerShell 2.0 compatible). Double-click to run.
+rem The batch header only runs the PowerShell text below the #PSBEGIN marker, in memory (no .ps1 file, no execution-policy change).
+rem Everything is plain readable text. It only reads system settings and makes network tests; it installs nothing and changes no settings.
+setlocal
+title AtomConnect network diagnostics
+set "ACFILE=%~f0"
+set "ACDIR=%~dp0"
+powershell.exe -NoProfile -Command "$t=[IO.File]::ReadAllText($env:ACFILE); $i=$t.LastIndexOf('#'+'PSBEGIN'); & ([scriptblock]::Create($t.Substring($i)))"
+echo.
+echo Finished. Press any key to close this window.
+pause >nul
+exit /b
+#PSBEGIN
+# ===================================================================================================
+# AtomConnect network diagnostics. PowerShell 2.0 compatible, ASCII only, no external downloads.
+# Tests, layer by layer: local setup -> DNS -> TCP -> TLS (SNI filtering) -> HTTP transfers (stalls)
+# -> WebSocket -> UDP/STUN/TURN -> optional Chrome network capture.
+# Writes AtomConnect-diag-<time>.txt next to this file. Nothing is uploaded anywhere.
+# ===================================================================================================
+$ErrorActionPreference = 'Continue'
+$ProgressPreference = 'SilentlyContinue'
+$script:Ver = '1.0'
+$script:IsWin = ($env:OS -eq 'Windows_NT')
+$script:rng = New-Object System.Random
+$script:Flags = New-Object System.Collections.ArrayList
+$script:Quick = ($env:ACQUICK -eq '1')     # testing aid: skip slow parts
+$script:T0 = Get-Date
+$ClientHost = 'atomconnect-client.atomhealth.workers.dev'
+$SigHost    = 'atomconnect-signaling.atomhealth.workers.dev'
+$script:ServerDates = New-Object System.Collections.ArrayList
+$script:TlsProto = $null
+$script:TlsErr = ''
+$script:SslErr = ''
+
+# ---------- report file ----------
+$stamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
+$script:Stamp = $stamp
+$script:sw = $null; $script:ReportPath = $null; $script:OutDir = $null
+$cands = @($env:ACDIR, [Environment]::GetFolderPath('Desktop'), $env:TEMP, (Get-Location).Path)
+foreach ($d in $cands) {
+    if (-not $d) { continue }
+    try {
+        $dd = $d.TrimEnd('\')
+        if (-not $dd) { $dd = $d }
+        $p = Join-Path $dd ('AtomConnect-diag-' + $stamp + '.txt')
+        $w = New-Object System.IO.StreamWriter -ArgumentList $p, $false, (New-Object System.Text.UTF8Encoding -ArgumentList $true)
+        $w.AutoFlush = $true
+        $script:sw = $w; $script:ReportPath = $p; $script:OutDir = $dd
+        break
+    } catch { }
+}
+
+function San([string]$s) {
+    if ($s -eq $null) { return '' }
+    # keep the report free of the PC name, Windows user name and MAC addresses
+    if ($env:COMPUTERNAME) { $s = [regex]::Replace($s, '(?i)\b' + [regex]::Escape($env:COMPUTERNAME) + '\b', '<PC>') }
+    if ($env:USERNAME) { $s = [regex]::Replace($s, '(?i)\b' + [regex]::Escape($env:USERNAME) + '\b', '<USER>') }
+    $s = [regex]::Replace($s, '(?i)\b[0-9a-f]{2}([-:][0-9a-f]{2}){5}\b', 'XX-XX-XX-XX-XX-XX')
+    return $s
+}
+function W([string]$s, [string]$color) {
+    $s = San $s
+    if ($color) { Write-Host $s -ForegroundColor $color } else { Write-Host $s }
+    if ($script:sw) { try { $script:sw.WriteLine($s) } catch { } }
+}
+function WL([string]$t, [string]$indent) {
+    foreach ($l in ($t -split "`r?`n")) { if ($l.Trim().Length -gt 0) { W ($indent + $l.TrimEnd()) } }
+}
+function Hdr([string]$t) { W ''; W ('=' * 72); W ('== ' + $t); W ('=' * 72) }
+function Flag([string]$s) { [void]$script:Flags.Add($s); W ('  [!] ' + $s) 'Yellow' }
+function Section([string]$title, [scriptblock]$body) {
+    Hdr $title
+    try { & $body } catch { W ('  !! section aborted: ' + $_.Exception.Message) 'Red' }
+}
+function Run([string]$cmdline) {
+    try { return ((& cmd.exe /c ($cmdline + ' 2>&1')) | Out-String) } catch { return ('(failed: ' + $_.Exception.Message + ')') }
+}
+function ErrT($e) {
+    $x = $e.Exception
+    if (-not $x) { return [string]$e }
+    while ($x.InnerException) { $x = $x.InnerException }
+    if ($x -is [System.Net.Sockets.SocketException]) { return ('{0} ({1})' -f $x.SocketErrorCode, $x.ErrorCode) }
+    return ($x.GetType().Name + ': ' + $x.Message)
+}
+
+# ---------- byte helpers ----------
+function Hx([string]$s) {
+    $h = $s -replace '\s', ''
+    $b = New-Object 'byte[]' ([int]($h.Length / 2))
+    for ($i = 0; $i -lt $b.Length; $i++) { $b[$i] = [Convert]::ToByte($h.Substring($i * 2, 2), 16) }
+    return ,$b
+}
+function BCat {
+    $ms = New-Object System.IO.MemoryStream
+    foreach ($a in $args) {
+        if ($null -ne $a) { $b = [byte[]]$a; if ($b.Length -gt 0) { $ms.Write($b, 0, $b.Length) } }
+    }
+    return ,($ms.ToArray())
+}
+function U16([int]$v) { return ,([byte[]]@((($v -shr 8) -band 255), ($v -band 255))) }
+function L8($b)  { $b = [byte[]]$b; return ,(BCat ([byte[]]@($b.Length)) $b) }
+function L16($b) { $b = [byte[]]$b; return ,(BCat (U16 $b.Length) $b) }
+function L24($b) { $b = [byte[]]$b; $n = $b.Length; return ,(BCat ([byte[]]@((($n -shr 16) -band 255), (($n -shr 8) -band 255), ($n -band 255))) $b) }
+function Asc([string]$s) { return ,([System.Text.Encoding]::ASCII.GetBytes($s)) }
+function Rnd([int]$n) { $b = New-Object 'byte[]' $n; $script:rng.NextBytes($b); return ,$b }
+function U16At($b, [int]$p) { return ([int]$b[$p] * 256 + [int]$b[$p + 1]) }
+function HexStr($b) { return [BitConverter]::ToString([byte[]]$b).Replace('-', '') }
+
+# ---------- IP helpers ----------
+$script:CfRanges = @('173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22', '141.101.64.0/18', '108.162.192.0/18',
+    '190.93.240.0/20', '188.114.96.0/20', '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13', '104.24.0.0/14',
+    '172.64.0.0/13', '131.0.72.0/22', '1.1.1.0/24', '1.0.0.0/24')
+function Ip2Long([string]$ip) { $p = $ip.Split('.'); return ([long]$p[0] * 16777216 + [long]$p[1] * 65536 + [long]$p[2] * 256 + [long]$p[3]) }
+function InCidr([string]$ip, [string]$cidr) {
+    $a = $cidr.Split('/'); $base = Ip2Long $a[0]; $size = [math]::Pow(2, 32 - [int]$a[1]); $v = Ip2Long $ip
+    return (($v -ge $base) -and ($v -lt ($base + $size)))
+}
+function IsCf([string]$ip) { foreach ($c in $script:CfRanges) { if (InCidr $ip $c) { return $true } }; return $false }
+function IsBogus([string]$ip) {
+    foreach ($c in '0.0.0.0/8', '10.0.0.0/8', '127.0.0.0/8', '169.254.0.0/16', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10', '192.0.2.0/24', '198.18.0.0/15', '224.0.0.0/3') {
+        if (InCidr $ip $c) { return $true }
+    }
+    return $false
+}
+function IpTag([string]$ip) {
+    if (IsBogus $ip) { return 'PRIVATE/BOGUS' }
+    if (IsCf $ip) { return 'Cloudflare' }
+    return 'non-Cloudflare'
+}
+
+# ---------- sockets ----------
+function Tcp-Connect([string]$ip, [int]$port, [int]$ms, [bool]$v6) {
+    $r = @{ Ok = $false; Ms = 0; Err = ''; Client = $null }
+    if ($v6) { $c = New-Object System.Net.Sockets.TcpClient -ArgumentList ([System.Net.Sockets.AddressFamily]::InterNetworkV6) } else { $c = New-Object System.Net.Sockets.TcpClient }
+    $stw = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        $iar = $c.BeginConnect($ip, $port, $null, $null)
+        if ($iar.AsyncWaitHandle.WaitOne($ms, $false)) {
+            $c.EndConnect($iar); $r.Ok = $true; $r.Client = $c
+        } else {
+            $r.Err = ('TIMEOUT after ' + $ms + ' ms (no reply to SYN: packets dropped)')
+            try { $c.Close() } catch { }
+        }
+    } catch { $r.Err = ErrT $_; try { $c.Close() } catch { } }
+    $r.Ms = $stw.ElapsedMilliseconds
+    return $r
+}
+function Sock-Recv($sock, [int]$ms) {
+    $res = @{ Data = $null; Status = 'timeout'; Err = '' }
+    if ($ms -lt 1) { $ms = 1 }
+    try {
+        if ($sock.Poll($ms * 1000, [System.Net.Sockets.SelectMode]::SelectRead)) {
+            $buf = New-Object 'byte[]' 16384
+            $n = $sock.Receive($buf)
+            if ($n -le 0) { $res.Status = 'fin' }
+            else { $d = New-Object 'byte[]' $n; [Array]::Copy($buf, $d, $n); $res.Data = $d; $res.Status = 'data' }
+        }
+    } catch { $res.Status = 'rst'; $res.Err = ErrT $_ }
+    return $res
+}
+
+# ---------- DNS client (raw, so we can ask specific servers; independent of the Windows resolver) ----------
+function Dns-Query([string]$server, [string]$name, [int]$qtype, [bool]$tcp, [int]$ms) {
+    $r = @{ Ok = $false; Rcode = -1; A = @(); AAAA = @(); Ms = 0; Err = '' }
+    $id = $script:rng.Next(1, 65535)
+    $q = New-Object System.IO.MemoryStream
+    foreach ($lab in $name.Split('.')) { $lb = Asc $lab; $q.WriteByte([byte]$lb.Length); $q.Write($lb, 0, $lb.Length) }
+    $q.WriteByte(0)
+    $qb = $q.ToArray()
+    $pkt = BCat (U16 $id) (Hx '0100 0001 0000 0000 0000') $qb (U16 $qtype) (Hx '0001')
+    $stw = [System.Diagnostics.Stopwatch]::StartNew()
+    $resp = $null
+    try {
+        if ($tcp) {
+            $c = Tcp-Connect $server 53 $ms $false
+            if (-not $c.Ok) { $r.Err = 'tcp: ' + $c.Err; return $r }
+            $s = $c.Client.Client
+            [void]$s.Send((BCat (U16 $pkt.Length) $pkt))
+            $rv = Sock-Recv $s $ms
+            if ($rv.Status -eq 'data') { $resp = New-Object 'byte[]' ($rv.Data.Length - 2); [Array]::Copy($rv.Data, 2, $resp, 0, $resp.Length) } else { $r.Err = $rv.Status + ' ' + $rv.Err }
+            $c.Client.Close()
+        } else {
+            $s = New-Object System.Net.Sockets.Socket -ArgumentList 'InterNetwork', 'Dgram', 'Udp'
+            $s.Connect($server, 53)
+            [void]$s.Send($pkt)
+            $rv = Sock-Recv $s $ms
+            if ($rv.Status -eq 'data') { $resp = $rv.Data } else { $r.Err = $rv.Status + ' ' + $rv.Err }
+            $s.Close()
+        }
+    } catch { $r.Err = ErrT $_ }
+    $r.Ms = $stw.ElapsedMilliseconds
+    if ($null -eq $resp -or $resp.Length -lt 12) { return $r }
+    $r.Ok = $true
+    $r.Rcode = [int]$resp[3] -band 15
+    $an = U16At $resp 6
+    $pos = 12
+    # skip question
+    while ($pos -lt $resp.Length -and $resp[$pos] -ne 0) { if (($resp[$pos] -band 192) -eq 192) { $pos++; break }; $pos += [int]$resp[$pos] + 1 }
+    $pos += 1 + 4
+    for ($i = 0; $i -lt $an -and $pos + 10 -le $resp.Length; $i++) {
+        while ($pos -lt $resp.Length) {
+            if (($resp[$pos] -band 192) -eq 192) { $pos += 2; break }
+            if ($resp[$pos] -eq 0) { $pos += 1; break }
+            $pos += [int]$resp[$pos] + 1
+        }
+        $t = U16At $resp $pos; $rl = U16At $resp ($pos + 8); $pos += 10
+        if ($pos + $rl -gt $resp.Length) { break }
+        if ($t -eq 1 -and $rl -eq 4) { $r.A += ($resp[$pos].ToString() + '.' + $resp[$pos + 1] + '.' + $resp[$pos + 2] + '.' + $resp[$pos + 3]) }
+        if ($t -eq 28 -and $rl -eq 16) { $ab = New-Object 'byte[]' 16; [Array]::Copy($resp, $pos, $ab, 0, 16); $r.AAAA += (New-Object System.Net.IPAddress -ArgumentList @(, $ab)).ToString() }
+        $pos += $rl
+    }
+    return $r
+}
+
+# ---------- TLS ClientHello probe (raw, no Windows TLS stack involved) ----------
+function Build-Hello([string]$sni, [string]$mode) {
+    $suites = Hx 'c02b c02f c02c c030 cca9 cca8 c013 c014 009c 009d 002f 0035'
+    if ($mode -eq 'tls13') { $suites = BCat (Hx '1301 1302 1303') $suites }
+    $ext = New-Object System.IO.MemoryStream
+    $add = {
+        param($t, $d)
+        $e = BCat (Hx $t) (L16 $d)
+        $ext.Write($e, 0, $e.Length)
+    }
+    if ($sni) { $nm = Asc $sni; & $add '0000' (L16 (BCat (Hx '00') (L16 $nm))) }
+    & $add '0017' (Hx '')
+    & $add 'ff01' (Hx '00')
+    & $add '000a' (L16 (Hx '001d 0017 0018'))
+    & $add '000b' (L8 (Hx '00'))
+    & $add '0023' (Hx '')
+    & $add '0010' (L16 (BCat (L8 (Asc 'h2')) (L8 (Asc 'http/1.1'))))
+    & $add '0005' (Hx '01 0000 0000')
+    & $add '000d' (L16 (Hx '0403 0804 0401 0503 0805 0501 0806 0601'))
+    & $add '0012' (Hx '')
+    if ($mode -eq 'tls13') {
+        & $add '0033' (L16 (BCat (Hx '001d') (L16 (Rnd 32))))
+        & $add '002d' (L8 (Hx '01'))
+        & $add '002b' (L8 (Hx '0304 0303'))
+    }
+    $body = BCat (Hx '0303') (Rnd 32) (L8 (Rnd 32)) (L16 $suites) (L8 (Hx '00')) (L16 ($ext.ToArray()))
+    $hs = BCat (Hx '01') (L24 $body)
+    return ,(BCat (Hx '16 0301') (L16 $hs))
+}
+function Parse-Tls($all) {
+    $r = @{ Alert = $null; Hello = $false; Ver = ''; Cipher = ''; Certs = @(); Done = $false; Bytes = $all.Length }
+    $hs = New-Object System.IO.MemoryStream
+    $pos = 0
+    while ($pos + 5 -le $all.Length) {
+        $rt = [int]$all[$pos]; $rl = U16At $all ($pos + 3)
+        if ($pos + 5 + $rl -gt $all.Length) { break }
+        if ($rt -eq 22) { $hs.Write($all, $pos + 5, $rl) }
+        elseif ($rt -eq 21 -and $rl -ge 2) { $r.Alert = ('level ' + $all[$pos + 5] + ', description ' + $all[$pos + 6]) }
+        $pos += 5 + $rl
+    }
+    $h = $hs.ToArray(); $p = 0
+    while ($p + 4 -le $h.Length) {
+        $mt = [int]$h[$p]; $ml = [int]$h[$p + 1] * 65536 + [int]$h[$p + 2] * 256 + [int]$h[$p + 3]
+        if ($p + 4 + $ml -gt $h.Length) { break }
+        $b = $p + 4
+        if ($mt -eq 2 -and $ml -ge 38) {
+            $r.Hello = $true
+            $ver = U16At $h $b
+            $sidl = [int]$h[$b + 34]
+            $r.Cipher = '0x{0:x4}' -f (U16At $h ($b + 35 + $sidl))
+            $e = $b + 35 + $sidl + 3
+            if ($e + 2 -le $b + $ml) {
+                $el = U16At $h $e; $e += 2; $end = $e + $el
+                while ($e + 4 -le $end) { $et = U16At $h $e; $elen = U16At $h ($e + 2); if ($et -eq 43) { $ver = U16At $h ($e + 4) }; $e += 4 + $elen }
+            }
+            if ($ver -eq 772) { $r.Ver = 'TLS1.3' } elseif ($ver -eq 771) { $r.Ver = 'TLS1.2' } elseif ($ver -eq 770) { $r.Ver = 'TLS1.1' } elseif ($ver -eq 769) { $r.Ver = 'TLS1.0' } else { $r.Ver = ('0x{0:x4}' -f $ver) }
+        } elseif ($mt -eq 11) {
+            $q = $b + 3; $endc = $b + $ml
+            while ($q + 3 -le $endc) {
+                $cl = [int]$h[$q] * 65536 + [int]$h[$q + 1] * 256 + [int]$h[$q + 2]; $q += 3
+                if ($q + $cl -gt $endc) { break }
+                $cb = New-Object 'byte[]' $cl; [Array]::Copy($h, $q, $cb, 0, $cl); $r.Certs += , $cb; $q += $cl
+            }
+        } elseif ($mt -eq 14) { $r.Done = $true }
+        $p += 4 + $ml
+    }
+    return $r
+}
+$script:CipherNames = @{ '0x1301' = 'TLS_AES_128_GCM_SHA256'; '0x1302' = 'TLS_AES_256_GCM_SHA384'; '0x1303' = 'TLS_CHACHA20_POLY1305'; '0xc02f' = 'ECDHE_RSA_AES128_GCM'; '0xc030' = 'ECDHE_RSA_AES256_GCM'; '0xc02b' = 'ECDHE_ECDSA_AES128_GCM'; '0xc02c' = 'ECDHE_ECDSA_AES256_GCM'; '0xcca8' = 'ECDHE_RSA_CHACHA20'; '0xcca9' = 'ECDHE_ECDSA_CHACHA20' }
+function Tls-Probe([string]$ip, [int]$port, [string]$sni, [string]$mode, [int]$ms) {
+    $r = @{ Status = '?'; Detail = ''; Ms = 0; Parsed = $null }
+    $c = Tcp-Connect $ip $port 5000 $false
+    if (-not $c.Ok) { $r.Status = 'CONNECT-FAIL'; $r.Detail = $c.Err; $r.Ms = $c.Ms; return $r }
+    $sock = $c.Client.Client
+    $stw = [System.Diagnostics.Stopwatch]::StartNew()
+    $acc = New-Object System.IO.MemoryStream
+    $last = 'timeout'; $lastErr = ''; $pt = $null; $first = -1
+    try {
+        $hello = Build-Hello $sni $mode
+        [void]$sock.Send($hello)
+        while ($stw.ElapsedMilliseconds -lt $ms) {
+            $rv = Sock-Recv $sock ([int]($ms - $stw.ElapsedMilliseconds))
+            $last = $rv.Status; $lastErr = $rv.Err
+            if ($rv.Status -eq 'data') {
+                if ($first -lt 0) { $first = $stw.ElapsedMilliseconds }
+                $acc.Write($rv.Data, 0, $rv.Data.Length)
+                $pt = Parse-Tls ($acc.ToArray())
+                if ($pt.Done -or $pt.Alert -or ($mode -eq 'tls13' -and $pt.Hello)) { break }
+            } else { break }
+        }
+    } catch { $last = 'rst'; $lastErr = ErrT $_ }
+    $r.Ms = $stw.ElapsedMilliseconds
+    try { $c.Client.Close() } catch { }
+    $r.Parsed = $pt
+    if ($pt -and $pt.Hello) {
+        $cn = $script:CipherNames[$pt.Cipher]
+        $r.Status = 'OK'; $r.Detail = ('ServerHello ' + $pt.Ver + ' ' + $pt.Cipher + $(if ($cn) { ' ' + $cn } else { '' }) + ', first byte after ' + $first + ' ms')
+        if ($mode -eq 'tls12' -and -not $pt.Done) { $r.Detail += (', but handshake incomplete (got ' + $pt.Bytes + ' bytes, last=' + $last + ')') }
+    } elseif ($pt -and $pt.Alert) { $r.Status = 'ALRT'; $r.Detail = ('server answered with a TLS alert (' + $pt.Alert + ') after ' + $r.Ms + ' ms: the path works; 40 = handshake_failure is normal when no server name is sent') }
+    elseif ($acc.Length -gt 0) { $r.Status = 'GARBAGE'; $r.Detail = ('got ' + $acc.Length + ' bytes that are not a TLS ServerHello: first bytes ' + (HexStr ($acc.ToArray()[0..([math]::Min(15, $acc.Length - 1))]))) }
+    elseif ($last -eq 'rst') { $r.Status = 'RST'; $r.Detail = ('connection RESET after ' + $r.Ms + ' ms (' + $lastErr + ')') }
+    elseif ($last -eq 'fin') { $r.Status = 'FIN'; $r.Detail = ('connection closed by peer (FIN) after ' + $r.Ms + ' ms, no data') }
+    else { $r.Status = 'TIMEOUT'; $r.Detail = ('no reply for ' + $ms + ' ms (hello silently dropped)') }
+    return $r
+}
+function Cert-Report($certs, [string]$indent) {
+    if (-not $certs -or @($certs).Count -eq 0) { W ($indent + '(no certificate captured)'); return }
+    try {
+        $x = New-Object System.Collections.ArrayList
+        foreach ($cb in $certs) { [void]$x.Add((New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList @(, $cb))) }
+        $i = 0
+        foreach ($c in $x) {
+            W ($indent + '[' + $i + '] subject: ' + $c.Subject); W ($indent + '    issuer : ' + $c.Issuer)
+            W ($indent + '    valid  : ' + $c.NotBefore.ToString('yyyy-MM-dd') + ' .. ' + $c.NotAfter.ToString('yyyy-MM-dd') + ', sha1 ' + $c.Thumbprint)
+            $i++
+        }
+        $leaf = $x[0]
+        if ($leaf.NotBefore -gt (Get-Date) -or $leaf.NotAfter -lt (Get-Date)) { Flag 'Server certificate is outside its validity dates as seen by this PC: the Windows clock is probably wrong.' }
+        $ch = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+        $ch.ChainPolicy.RevocationMode = 'NoCheck'
+        for ($k = 1; $k -lt $x.Count; $k++) { [void]$ch.ChainPolicy.ExtraStore.Add($x[$k]) }
+        $ok = $ch.Build($leaf)
+        $st = @(); foreach ($s in $ch.ChainStatus) { $st += ($s.Status.ToString() + ' (' + $s.StatusInformation.Trim() + ')') }
+        $el = $ch.ChainElements; $root = $el[$el.Count - 1].Certificate
+        W ($indent + 'Windows trust check: ' + $(if ($ok) { 'TRUSTED' } else { 'NOT TRUSTED: ' + ($st -join '; ') }) + ', chain ends at root: ' + $root.Subject)
+        if (-not $ok) { Flag ('Windows does not trust the certificate chain presented by the server (' + ($st -join '; ') + '): missing root certificates, wrong clock, or someone is intercepting TLS.') }
+        if ($leaf.Issuer -notmatch 'Google Trust|Let.s Encrypt|Cloudflare|DigiCert|GlobalSign|Baltimore|Sectigo|USERTrust|ISRG') { Flag ('Server certificate issuer looks unusual for Cloudflare: ' + $leaf.Issuer + ' (possible TLS interception by antivirus/ISP).') }
+    } catch { W ($indent + 'certificate analysis failed: ' + $_.Exception.Message) }
+}
+
+# ---------- full TLS via the Windows stack (SslStream), used for HTTPS / WSS / TURNS ----------
+function Ssl-Open([string]$ip, [int]$port, [string]$sni, [int]$protoOverride) {
+    $r = @{ Ok = $false; Stream = $null; Client = $null; Err = ''; Ms = 0; Proto = ''; Cert = $null; SslErr = '' }
+    $c = Tcp-Connect $ip $port 6000 $false
+    if (-not $c.Ok) { $r.Err = 'tcp: ' + $c.Err; return $r }
+    $stw = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        $ns = $c.Client.GetStream()
+        $script:SslErr = ''
+        $cb = [System.Net.Security.RemoteCertificateValidationCallback]{ param($s, $cert, $chain, $e) $script:SslErr = [string]$e; return $true }
+        $ssl = New-Object System.Net.Security.SslStream -ArgumentList $ns, $false, $cb
+        $proto = $script:TlsProto
+        if ($protoOverride -gt 0) { $proto = $protoOverride }
+        if ($proto -eq $null) { $proto = 3072 }
+        $ssl.AuthenticateAsClient($sni, $null, [System.Security.Authentication.SslProtocols]$proto, $false)
+        $r.Ok = $true; $r.Stream = $ssl; $r.Client = $c.Client; $r.Proto = [string]$ssl.SslProtocol; $r.SslErr = $script:SslErr
+        try { $r.Cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList @(, $ssl.RemoteCertificate.GetRawCertData()) } catch { }
+    } catch { $r.Err = 'tls handshake: ' + (ErrT $_); try { $c.Client.Close() } catch { } }
+    $r.Ms = $stw.ElapsedMilliseconds
+    return $r
+}
+
+# ---------- HTTP(S) GET with stall detection ----------
+$script:NormalHdrs = 'date|content-type|content-length|connection|cf-cache-status|server|cf-ray|access-control-allow-origin|access-control-allow-headers|access-control-allow-methods|access-control-expose-headers|cache-control|etag|last-modified|vary|age|accept-ranges|x-turn|alt-svc|nel|report-to|content-encoding|transfer-encoding|location|expires|x-content-type-options|strict-transport-security|set-cookie|content-security-policy|cross-origin-resource-policy|timing-allow-origin|cf-.*|speed-.*|x-robots-tag|referrer-policy|asn|city|colo|country|region|regioncode|latitude|longitude|postalcode|timezone|server-timing|metrocode|continent'
+function Http-Get([string]$ip, [int]$port, [string]$hostName, [string]$path, [bool]$tls, [int]$maxBody, [int]$idleMs, [int]$totalMs, [string]$expect) {
+    $r = @{ Geo = @{}; Outcome = '?'; Code = 0; Bytes = 0; Body = 0; CL = -1; TtfbMs = -1; LastMs = 0; TotalMs = 0; Err = ''; Extra = @(); Server = ''; Loc = ''; Snippet = ''; Text = ''; Tls = ''; Date = '' }
+    $stream = $null; $cl = $null
+    $stw = [System.Diagnostics.Stopwatch]::StartNew()
+    if ($tls) {
+        $o = Ssl-Open $ip $port $hostName 0
+        if (-not $o.Ok) { $r.Outcome = 'CONNECT-FAIL'; $r.Err = $o.Err; $r.TotalMs = $stw.ElapsedMilliseconds; return $r }
+        $stream = $o.Stream; $cl = $o.Client; $r.Tls = $o.Proto
+        if ($o.SslErr -and $o.SslErr -ne 'None') { $r.Tls += (' (cert errors: ' + $o.SslErr + ')') }
+    } else {
+        $c = Tcp-Connect $ip $port 6000 $false
+        if (-not $c.Ok) { $r.Outcome = 'CONNECT-FAIL'; $r.Err = $c.Err; $r.TotalMs = $stw.ElapsedMilliseconds; return $r }
+        $cl = $c.Client.Client; $stream = $c.Client.GetStream()
+    }
+    $acc = New-Object System.IO.MemoryStream
+    $hdrEnd = -1; $chunked = $false
+    $lat = [System.Text.Encoding]::GetEncoding(28591)
+    try {
+        $stream.ReadTimeout = $idleMs
+        $req = 'GET ' + $path + " HTTP/1.1`r`nHost: " + $hostName + "`r`nUser-Agent: AtomConnect-diag/" + $script:Ver + "`r`nAccept: */*`r`nAccept-Encoding: identity`r`nCache-Control: no-cache`r`nConnection: close`r`n`r`n"
+        $rb = Asc $req; $stream.Write($rb, 0, $rb.Length); $stream.Flush()
+        $buf = New-Object 'byte[]' 16384
+        while ($true) {
+            if ($stw.ElapsedMilliseconds -gt $totalMs) { $r.Outcome = 'TOTAL-TIMEOUT'; break }
+            try { $n = $stream.Read($buf, 0, $buf.Length) }
+            catch {
+                $x = $_.Exception; while ($x.InnerException) { $x = $x.InnerException }
+                if ($x -is [System.Net.Sockets.SocketException] -and $x.SocketErrorCode -eq 'TimedOut') { $r.Outcome = 'STALL' }
+                elseif ($x -is [System.Net.Sockets.SocketException] -and $x.SocketErrorCode -eq 'ConnectionReset') { $r.Outcome = 'RST'; $r.Err = ErrT $_ }
+                else { $r.Outcome = 'READ-ERROR'; $r.Err = ErrT $_ }
+                break
+            }
+            if ($n -le 0) { $r.Outcome = 'EOF'; break }
+            if ($r.TtfbMs -lt 0) { $r.TtfbMs = $stw.ElapsedMilliseconds }
+            $r.LastMs = $stw.ElapsedMilliseconds
+            $acc.Write($buf, 0, $n)
+            if ($hdrEnd -lt 0) {
+                $t = $lat.GetString($acc.ToArray())
+                $ix = $t.IndexOf("`r`n`r`n")
+                if ($ix -ge 0) {
+                    $hdrEnd = $ix + 4
+                    $lines = $t.Substring(0, $ix) -split "`r`n"
+                    if ($lines[0] -match 'HTTP/\d\.\d (\d+)') { $r.Code = [int]$matches[1] }
+                    for ($i = 1; $i -lt $lines.Length; $i++) {
+                        if ($lines[$i] -match '^([^:]+):\s*(.*)$') {
+                            $hname = $matches[1]; $hn = $hname.ToLower(); $hv = $matches[2]
+                            if ($hn -eq 'content-length') { $r.CL = [long]$hv }
+                            elseif ($hn -eq 'transfer-encoding' -and $hv -match 'chunked') { $chunked = $true }
+                            elseif ($hn -eq 'server') { $r.Server = $hv }
+                            elseif ($hn -eq 'location') { $r.Loc = $hv }
+                            elseif ($hn -eq 'date') { $r.Date = $hv }
+                            elseif ($hn -match '^(asn|city|colo|country|region|regioncode)$') { $r.Geo[$hn] = $hv }
+                            if ($hn -notmatch ('^(' + $script:NormalHdrs + ')$')) { $r.Extra += ($hname + ': ' + $(if ($hv.Length -gt 100) { $hv.Substring(0, 100) } else { $hv })) }
+                        }
+                    }
+                }
+            }
+            if ($hdrEnd -ge 0) {
+                $body = $acc.Length - $hdrEnd
+                if ($r.CL -ge 0 -and $body -ge $r.CL) { $r.Outcome = 'COMPLETE'; break }
+                if ($body -ge $maxBody) { $r.Outcome = 'MAX'; break }
+            }
+        }
+    } catch { $r.Outcome = 'ERROR'; $r.Err = ErrT $_ }
+    $r.TotalMs = $stw.ElapsedMilliseconds
+    $r.Bytes = $acc.Length
+    if ($hdrEnd -ge 0) { $r.Body = $acc.Length - $hdrEnd }
+    try { if ($stream) { $stream.Close() } } catch { }
+    try { if ($cl) { $cl.Close() } } catch { }
+    if ($r.Outcome -eq 'EOF') {
+        if ($hdrEnd -lt 0) { $r.Outcome = 'EOF-NO-HEADERS' }
+        elseif ($r.CL -ge 0 -and $r.Body -lt $r.CL) { $r.Outcome = 'EOF-EARLY' }
+        elseif ($chunked) {
+            $all = $acc.ToArray(); $tail = $lat.GetString($all, [math]::Max(0, $all.Length - 7), [math]::Min(7, $all.Length))
+            if ($tail -match '0\r\n\r\n$') { $r.Outcome = 'COMPLETE' } else { $r.Outcome = 'EOF-EARLY' }
+        } else { $r.Outcome = 'COMPLETE' }
+    }
+    if ($hdrEnd -ge 0 -and $acc.Length -gt $hdrEnd) {
+        $all = $acc.ToArray(); $take = [math]::Min($all.Length - $hdrEnd, 70000)
+        $txt = $lat.GetString($all, $hdrEnd, $take)
+        $r.Text = $txt
+        $sn = $txt.Substring(0, [math]::Min(160, $txt.Length)) -replace '[^\x20-\x7e]', '.'
+        $r.Snippet = $sn
+        if ($expect -and $r.Code -eq 200 -and ($r.Outcome -eq 'COMPLETE' -or $r.Outcome -eq 'MAX') -and $txt -notmatch $expect) { $r.Outcome = $r.Outcome + '+UNEXPECTED-CONTENT' }
+    }
+    return $r
+}
+function Http-Line([string]$label, $r, [int]$expectBytes) {
+    $kb = $r.Body
+    $tag = '[ OK ]'
+    $o = $r.Outcome
+    $good = ($o -eq 'COMPLETE' -or $o -eq 'MAX')
+    if (-not $good) { $tag = '[FAIL]' }
+    if ($o -eq 'STALL') { $tag = '[STALL]' }
+    $msg = ($tag + ' ' + $label + ': ')
+    if ($r.Code -gt 0) { $msg += ('HTTP ' + $r.Code + ', ') }
+    $msg += ([string]$kb + ' body bytes')
+    if ($r.CL -ge 0) { $msg += (' of ' + $r.CL) }
+    $msg += (', ' + $o)
+    if ($r.TtfbMs -ge 0) { $msg += (', first byte ' + $r.TtfbMs + ' ms, last data at ' + $r.LastMs + ' ms') }
+    $msg += (', total ' + $r.TotalMs + ' ms')
+    if ($r.Tls) { $msg += (', ' + $r.Tls) }
+    if ($r.Err) { $msg += (' [' + $r.Err + ']') }
+    if ($good) { W ('  ' + $msg) } else { W ('  ' + $msg) 'Red' }
+    if ($r.Loc) { W ('        redirect to: ' + $r.Loc) }
+    if ($label -match '^(HTTPS )?(client|signaling)') { foreach ($e in $r.Extra) { W ('        non-standard header: ' + $e) } }
+    if ($r.Geo.Count -gt 0 -and -not $script:GeoShown) {
+        $script:GeoShown = $true
+        W ('        Cloudflare sees this connection as: ASN ' + $r.Geo['asn'] + ', country ' + $r.Geo['country'] + ', city ' + $r.Geo['city'] + ', Cloudflare datacenter ' + $r.Geo['colo']) 'Cyan'
+    }
+    if ($o -match 'UNEXPECTED') { W ('        content snippet: ' + $r.Snippet) 'Red' }
+    if ($r.Date) { [void]$script:ServerDates.Add($r.Date) }
+}
+
+# ---------- STUN / TURN ----------
+function Stun-Attr([int]$type, $val) { $val = [byte[]]$val; $pad = (4 - ($val.Length % 4)) % 4; $pb = New-Object 'byte[]' $pad; return ,(BCat (U16 $type) (U16 $val.Length) $val $pb) }
+function Stun-Parse($b) {
+    $r = @{ Type = 0; Tx = ''; Err = 0; Realm = ''; Nonce = $null; Mapped = ''; Relayed = ''; Lifetime = -1 }
+    if ($null -eq $b -or $b.Length -lt 20) { return $r }
+    $r.Type = U16At $b 0; $len = U16At $b 2; $r.Tx = HexStr ([byte[]]$b[8..19])
+    $p = 20; $end = [math]::Min($b.Length, 20 + $len)
+    while ($p + 4 -le $end) {
+        $t = U16At $b $p; $l = U16At $b ($p + 2); $v = $p + 4
+        if ($v + $l -gt $end) { break }
+        if ($t -eq 9 -and $l -ge 4) { $r.Err = ([int]$b[$v + 2] -band 7) * 100 + [int]$b[$v + 3] }
+        elseif ($t -eq 20) { $r.Realm = [System.Text.Encoding]::ASCII.GetString($b, $v, $l) }
+        elseif ($t -eq 21) { $nb = New-Object 'byte[]' $l; [Array]::Copy($b, $v, $nb, 0, $l); $r.Nonce = $nb }
+        elseif (($t -eq 32 -or $t -eq 22) -and $l -ge 8 -and $b[$v + 1] -eq 1) {
+            $port = (U16At $b ($v + 2)) -bxor 8466
+            $ip = ([int]$b[$v + 4] -bxor 33).ToString() + '.' + ([int]$b[$v + 5] -bxor 18) + '.' + ([int]$b[$v + 6] -bxor 164) + '.' + ([int]$b[$v + 7] -bxor 66)
+            if ($t -eq 32) { $r.Mapped = $ip + ':' + $port } else { $r.Relayed = $ip + ':' + $port }
+        }
+        elseif ($t -eq 13 -and $l -ge 4) { $r.Lifetime = [int]$b[$v] * 16777216 + [int]$b[$v + 1] * 65536 + [int]$b[$v + 2] * 256 + [int]$b[$v + 3] }
+        $p = $v + $l + ((4 - ($l % 4)) % 4)
+    }
+    return $r
+}
+function Stun-Msg([int]$type, $tx, $attrs, $key) {
+    if ($null -eq $attrs) { $attrs = [byte[]]@() } else { $attrs = [byte[]]$attrs }
+    if ($null -eq $key) { return ,(BCat (U16 $type) (U16 $attrs.Length) (Hx '2112a442') $tx $attrs) }
+    $pre = BCat (U16 $type) (U16 ($attrs.Length + 24)) (Hx '2112a442') $tx $attrs
+    $hm = New-Object System.Security.Cryptography.HMACSHA1 -ArgumentList @(, ([byte[]]$key))
+    $mi = $hm.ComputeHash([byte[]]$pre)
+    return ,(BCat $pre (Stun-Attr 8 $mi))
+}
+function Chan-Open([string]$kind, [string]$ip, [int]$port, [string]$sni) {
+    $ch = @{ Kind = $kind; Sock = $null; Stream = $null; Client = $null; Err = ''; Ms = 0 }
+    $stw = [System.Diagnostics.Stopwatch]::StartNew()
+    if ($kind -eq 'udp') {
+        try { $s = New-Object System.Net.Sockets.Socket -ArgumentList 'InterNetwork', 'Dgram', 'Udp'; $s.Connect($ip, $port); $ch.Sock = $s } catch { $ch.Err = ErrT $_ }
+    } elseif ($kind -eq 'tcp') {
+        $c = Tcp-Connect $ip $port 5000 $false
+        if ($c.Ok) { $ch.Client = $c.Client; $ch.Stream = $c.Client.GetStream() } else { $ch.Err = $c.Err }
+    } else {
+        $o = Ssl-Open $ip $port $sni 0
+        if ($o.Ok) { $ch.Client = $o.Client; $ch.Stream = $o.Stream } else { $ch.Err = $o.Err }
+    }
+    $ch.Ms = $stw.ElapsedMilliseconds
+    return $ch
+}
+function Chan-Close($ch) { try { if ($ch.Sock) { $ch.Sock.Close() } } catch { }; try { if ($ch.Stream) { $ch.Stream.Close() } } catch { }; try { if ($ch.Client) { $ch.Client.Close() } } catch { } }
+function Chan-Xchg($ch, $pkt, [int]$ms) {
+    $res = @{ Data = $null; Err = '' }
+    $pkt = [byte[]]$pkt
+    $tx = HexStr ([byte[]]$pkt[8..19])
+    try {
+        if ($ch.Kind -eq 'udp') {
+            $per = [int]($ms / 3)
+            for ($i = 0; $i -lt 3 -and $null -eq $res.Data; $i++) {
+                [void]$ch.Sock.Send($pkt)
+                $stw = [System.Diagnostics.Stopwatch]::StartNew()
+                while ($stw.ElapsedMilliseconds -lt $per) {
+                    $rv = Sock-Recv $ch.Sock ([int]($per - $stw.ElapsedMilliseconds))
+                    if ($rv.Status -eq 'data') { if ((HexStr ([byte[]]$rv.Data[8..19])) -eq $tx) { $res.Data = $rv.Data; break } }
+                    elseif ($rv.Status -eq 'rst') { $res.Err = $rv.Err; return $res }
+                    else { break }
+                }
+            }
+            if ($null -eq $res.Data -and -not $res.Err) { $res.Err = ('no reply to 3 UDP requests in ' + $ms + ' ms') }
+        } else {
+            $ch.Stream.ReadTimeout = $ms
+            $ch.Stream.Write($pkt, 0, $pkt.Length); $ch.Stream.Flush()
+            $hd = New-Object 'byte[]' 20; $got = 0
+            while ($got -lt 20) { $n = $ch.Stream.Read($hd, $got, 20 - $got); if ($n -le 0) { $res.Err = 'connection closed by peer'; return $res }; $got += $n }
+            $len = U16At $hd 2
+            $body = New-Object 'byte[]' $len; $got = 0
+            while ($got -lt $len) { $n = $ch.Stream.Read($body, $got, $len - $got); if ($n -le 0) { $res.Err = 'connection closed by peer'; return $res }; $got += $n }
+            $res.Data = [byte[]](BCat $hd $body)
+        }
+    } catch { $res.Err = ErrT $_ }
+    return $res
+}
+function Stun-Test([string]$label, [string]$kind, [string]$ip, [int]$port, [string]$sni) {
+    $ch = Chan-Open $kind $ip $port $sni
+    if ($ch.Err) { W ('  [FAIL] ' + $label + ' ' + $ip + ':' + $port + ' ' + $kind + ': ' + $ch.Err) 'Red'; return $false }
+    $tx = Rnd 12
+    $q = Stun-Msg 1 $tx (New-Object 'byte[]' 0) $null
+    $stw = [System.Diagnostics.Stopwatch]::StartNew()
+    $x = Chan-Xchg $ch $q 4500
+    $ms = $stw.ElapsedMilliseconds
+    Chan-Close $ch
+    if ($x.Data) { $p = Stun-Parse $x.Data; W ('  [ OK ] ' + $label + ' ' + $ip + ':' + $port + ' ' + $kind + ': binding response in ' + $ms + ' ms, your public address as seen by server: ' + $p.Mapped); return $true }
+    W ('  [FAIL] ' + $label + ' ' + $ip + ':' + $port + ' ' + $kind + ': ' + $x.Err) 'Red'; return $false
+}
+function Turn-Test([string]$label, [string]$kind, [string]$ip, [int]$port, [string]$sni, [string]$user, [string]$pass) {
+    $ch = Chan-Open $kind $ip $port $sni
+    if ($ch.Err) { W ('  [FAIL] ' + $label + ' ' + $kind + ' ' + $ip + ':' + $port + ': ' + $ch.Err) 'Red'; return $false }
+    $req = Stun-Attr 25 (Hx '11000000')
+    $stw = [System.Diagnostics.Stopwatch]::StartNew()
+    $x = Chan-Xchg $ch (Stun-Msg 3 (Rnd 12) $req $null) 5000
+    if (-not $x.Data) { Chan-Close $ch; W ('  [FAIL] ' + $label + ' ' + $kind + ' ' + $ip + ':' + $port + ': connected (' + $ch.Ms + ' ms) but TURN server never answered: ' + $x.Err) 'Red'; return $false }
+    $p = Stun-Parse $x.Data
+    if ($p.Err -ne 401 -or -not $p.Nonce) { Chan-Close $ch; W ('  [WARN] ' + $label + ' ' + $kind + ' ' + $ip + ':' + $port + ': unexpected reply type 0x' + ('{0:x4}' -f $p.Type) + ' error ' + $p.Err) 'Yellow'; return $false }
+    $ms1 = $stw.ElapsedMilliseconds
+    if (-not $user) { Chan-Close $ch; W ('  [ OK ] ' + $label + ' ' + $kind + ' ' + $ip + ':' + $port + ': TURN server reachable (401 challenge in ' + $ms1 + ' ms; no credentials to try a real allocation)'); return $true }
+    $md5 = [System.Security.Cryptography.MD5]::Create()
+    $key = $md5.ComputeHash([System.Text.Encoding]::ASCII.GetBytes($user + ':' + $p.Realm + ':' + $pass))
+    $attrs = BCat (Stun-Attr 6 (Asc $user)) (Stun-Attr 20 (Asc $p.Realm)) (Stun-Attr 21 $p.Nonce) $req
+    $x2 = Chan-Xchg $ch (Stun-Msg 3 (Rnd 12) $attrs $key) 5000
+    if (-not $x2.Data) { Chan-Close $ch; W ('  [FAIL] ' + $label + ' ' + $kind + ' ' + $ip + ':' + $port + ': challenge OK but allocation got no reply: ' + $x2.Err) 'Red'; return $false }
+    $p2 = Stun-Parse $x2.Data
+    $ms2 = $stw.ElapsedMilliseconds
+    if ($p2.Type -eq 259) {
+        W ('  [ OK ] ' + $label + ' ' + $kind + ' ' + $ip + ':' + $port + ': RELAY ALLOCATED in ' + $ms2 + ' ms (relay address ' + $p2.Relayed + ', your public address ' + $p2.Mapped + ')')
+        try { # release the allocation right away (Refresh with LIFETIME 0)
+            $ra = BCat (Stun-Attr 13 (Hx '00000000')) (Stun-Attr 6 (Asc $user)) (Stun-Attr 20 (Asc $p.Realm)) (Stun-Attr 21 $p.Nonce)
+            [void](Chan-Xchg $ch (Stun-Msg 4 (Rnd 12) $ra $key) 2000)
+        } catch { }
+        Chan-Close $ch; return $true
+    }
+    Chan-Close $ch
+    W ('  [WARN] ' + $label + ' ' + $kind + ' ' + $ip + ':' + $port + ': allocation refused, reply type 0x' + ('{0:x4}' -f $p2.Type) + ' error ' + $p2.Err + ' (server reachable, credentials/quota issue)') 'Yellow'
+    return $true
+}
+
+# ---------- WebSocket ----------
+function Ws-Mask([string]$text) {
+    $pl = [System.Text.Encoding]::UTF8.GetBytes($text); $mk = Rnd 4
+    $m = New-Object 'byte[]' $pl.Length
+    for ($i = 0; $i -lt $pl.Length; $i++) { $m[$i] = $pl[$i] -bxor $mk[$i % 4] }
+    return ,(BCat ([byte[]]@(129, (128 + $pl.Length))) $mk $m)
+}
+function Ws-ReadFrame($stream, [int]$ms) {
+    # returns text of next frame, '' on close, $null on timeout/error
+    try {
+        $stream.ReadTimeout = $ms
+        $h = New-Object 'byte[]' 2; $got = 0
+        while ($got -lt 2) { $n = $stream.Read($h, $got, 2 - $got); if ($n -le 0) { return '' }; $got += $n }
+        $op = [int]$h[0] -band 15; $len = [int]$h[1] -band 127
+        if ($len -eq 126) { $e = New-Object 'byte[]' 2; $got = 0; while ($got -lt 2) { $n = $stream.Read($e, $got, 2 - $got); if ($n -le 0) { return '' }; $got += $n }; $len = U16At $e 0 }
+        $pl = New-Object 'byte[]' $len; $got = 0
+        while ($got -lt $len) { $n = $stream.Read($pl, $got, $len - $got); if ($n -le 0) { return '' }; $got += $n }
+        if ($op -eq 8) { return '' }
+        return [System.Text.Encoding]::UTF8.GetString($pl)
+    } catch { return $null }
+}
+function Ws-Test([string]$label, [string]$ip, [int]$port, [bool]$tls, [string]$hostName) {
+    $stw = [System.Diagnostics.Stopwatch]::StartNew()
+    if ($tls) {
+        $o = Ssl-Open $ip $port $hostName 0
+        if (-not $o.Ok) { W ('  [FAIL] ' + $label + ': ' + $o.Err) 'Red'; return }
+        $stream = $o.Stream; $cl = $o.Client
+    } else {
+        $c = Tcp-Connect $ip $port 6000 $false
+        if (-not $c.Ok) { W ('  [FAIL] ' + $label + ': ' + $c.Err) 'Red'; return }
+        $stream = $c.Client.GetStream(); $cl = $c.Client.Client
+    }
+    try {
+        $room = 'zzdiag' + $script:rng.Next(100000, 999999)
+        $key = [Convert]::ToBase64String((Rnd 16))
+        $req = 'GET /ws?room=' + $room + "&v=diag HTTP/1.1`r`nHost: " + $hostName + "`r`nUpgrade: websocket`r`nConnection: Upgrade`r`nSec-WebSocket-Key: " + $key + "`r`nSec-WebSocket-Version: 13`r`nOrigin: https://" + $ClientHost + "`r`nUser-Agent: AtomConnect-diag/" + $script:Ver + "`r`n`r`n"
+        $rb = Asc $req; $stream.ReadTimeout = 8000; $stream.Write($rb, 0, $rb.Length); $stream.Flush()
+        # read response headers byte by byte so we do not swallow the first frame
+        $hdr = ''; $one = New-Object 'byte[]' 1
+        while ($hdr.Length -lt 4096 -and -not $hdr.EndsWith("`r`n`r`n")) {
+            $n = $stream.Read($one, 0, 1); if ($n -le 0) { break }; $hdr += [char]$one[0]
+        }
+        $hms = $stw.ElapsedMilliseconds
+        $line = ($hdr -split "`r`n")[0]
+        if ($line -notmatch ' 101 ') {
+            W ('  [FAIL] ' + $label + ': upgrade refused/unexpected: "' + ($line -replace '[^\x20-\x7e]', '.') + '" after ' + $hms + ' ms') 'Red'
+            return
+        }
+        $welcome = Ws-ReadFrame $stream 6000
+        if ($welcome -and $welcome -match '"welcome"') { W ('  [ OK ] ' + $label + ': upgrade 101 in ' + $hms + ' ms, server "welcome" message received') }
+        else { W ('  [WARN] ' + $label + ': upgrade 101 OK but no welcome frame within 6 s') 'Yellow'; return }
+        $rtts = @(); $lost = 0
+        for ($k = 0; $k -lt 3; $k++) {
+            $f = Ws-Mask '{"type":"ping"}'; $t0 = [System.Diagnostics.Stopwatch]::StartNew()
+            $stream.Write($f, 0, $f.Length); $stream.Flush()
+            $pg = Ws-ReadFrame $stream 5000
+            if ($pg -and $pg -match 'pong') { $rtts += $t0.ElapsedMilliseconds } else { $lost++ }
+            if ($k -lt 2) { Start-Sleep -Milliseconds 4000 }
+        }
+        W ('         ping/pong over ~10 s idle: ' + $rtts.Count + '/3 answered' + $(if ($rtts.Count -gt 0) { ', round trips ms: ' + ($rtts -join ', ') } else { '' }))
+        if ($lost -gt 0) { Flag ($label + ': ' + $lost + ' of 3 WebSocket pings got no answer (connection silently dropped or throttled).') }
+        $cf = Ws-Mask ''; $cf[0] = 136
+        try { $stream.Write($cf, 0, $cf.Length) } catch { }
+    } catch { W ('  [FAIL] ' + $label + ': ' + (ErrT $_)) 'Red' }
+    finally { try { $stream.Close() } catch { }; try { $cl.Close() } catch { } }
+}
+
+# ===================================================================================================
+# START
+# ===================================================================================================
+Clear-Host
+W '#######################################################################'
+W ('# AtomConnect network diagnostics v' + $script:Ver)
+W '#######################################################################'
+W ('Started: ' + (Get-Date).ToString('yyyy-MM-dd HH:mm:ss') + '  (UTC ' + (Get-Date).ToUniversalTime().ToString('HH:mm:ss') + ')')
+W ('PowerShell ' + $PSVersionTable.PSVersion + ', CLR ' + [Environment]::Version + ', report: ' + $script:ReportPath)
+W ''
+W 'This takes about 3-5 minutes. It only sends small test requests to AtomConnect, Cloudflare and a few'
+W 'public sites (Google, Yandex, Ubuntu mirror) for comparison. It does NOT upload anything.'
+W 'The report contains: your public IP address, DNS servers, proxy settings, names of antivirus/VPN'
+W 'programs, and Windows version. PC name, user name and MAC addresses are masked. Review it before sending.'
+W ''
+if (-not $script:Quick) { [void](Read-Host 'Press Enter to start') }
+
+# ---------------------------------------------------------------------------------------------------
+Section 'A. This computer' {
+    $dtn = Get-Date
+    W ('Local time : ' + $dtn.ToString('yyyy-MM-dd HH:mm:ss') + ', time zone: ' + [TimeZone]::CurrentTimeZone.StandardName + ', UTC offset ' + [TimeZone]::CurrentTimeZone.GetUtcOffset($dtn))
+    W ('Culture    : ' + [System.Globalization.CultureInfo]::CurrentCulture.Name + ', OEM codepage ' + [Console]::OutputEncoding.CodePage)
+    if ($script:IsWin) {
+        try {
+            $os = Get-WmiObject Win32_OperatingSystem
+            W ('Windows    : ' + $os.Caption + ' ' + $os.Version + ' SP' + $os.ServicePackMajorVersion + ' ' + $os.OSArchitecture)
+            $cs = Get-WmiObject Win32_ComputerSystem
+            W ('Domain PC  : ' + $cs.PartOfDomain + $(if ($cs.PartOfDomain) { ' (corporate network policies may apply)' } else { '' }))
+        } catch { W ('OS query failed: ' + $_.Exception.Message) }
+        try {
+            $kbs = @(Get-WmiObject Win32_QuickFixEngineering | ForEach-Object { $_.HotFixID })
+            W ('Updates    : ' + $kbs.Count + ' hotfixes installed')
+            foreach ($k in 'KB3140245', 'KB3033929', 'KB2999226', 'KB4474419', 'KB4490628', 'KB4534310', 'KB4536952') { W ('   ' + $k + ': ' + $(if ($kbs -contains $k) { 'installed' } else { 'missing' })) }
+            W '   (KB3140245 = TLS 1.2 for WinHTTP/.NET apps; KB4474419/KB4490628 = SHA-2 support; later ones = root certificate updates)'
+        } catch { W ('Hotfix query failed: ' + $_.Exception.Message) }
+        try {
+            $nd = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full' -ErrorAction Stop).Release
+            W ('.NET 4.x   : release ' + $nd + ' (378389=4.5, 378675=4.5.1, 379893=4.5.2, 393295=4.6, 394254=4.6.1, 460798=4.7)')
+        } catch { W '.NET 4.x   : not installed' }
+        # Chrome
+        $script:ChromePath = $null
+        foreach ($k in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe', 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe', 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe') {
+            try { $v = (Get-ItemProperty $k -ErrorAction Stop).'(default)'; if ($v -and (Test-Path $v)) { $script:ChromePath = $v; break } } catch { }
+        }
+        if (-not $script:ChromePath) {
+            foreach ($b in $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA) { if ($b) { $cp = Join-Path $b 'Google\Chrome\Application\chrome.exe'; if (Test-Path $cp) { $script:ChromePath = $cp; break } } }
+        }
+        if ($script:ChromePath) { W ('Chrome      : ' + (Get-Item $script:ChromePath).VersionInfo.FileVersion + '  (' + $script:ChromePath + ')') } else { W 'Chrome      : not found in the usual places' }
+        try {
+            $pol = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Google\Chrome' -ErrorAction Stop
+            W 'Chrome policies are set on this PC (managed browser):'
+            foreach ($pp in $pol.PSObject.Properties) { if ($pp.Name -notmatch '^PS') { W ('   ' + $pp.Name + ' = ' + $pp.Value) } }
+        } catch { }
+        # Security software
+        try {
+            $av = @(Get-WmiObject -Namespace 'root\SecurityCenter2' -Class AntiVirusProduct -ErrorAction Stop | ForEach-Object { $_.displayName })
+            W ('Antivirus (Security Center): ' + $(if ($av.Count) { $av -join '; ' } else { 'none registered' }))
+        } catch { W 'Antivirus (Security Center): query not available' }
+        $names = @{}
+        foreach ($pr in (Get-Process)) { $names[$pr.ProcessName] = 1 }
+        W ('Running process names (' + $names.Count + '; names only, to spot antivirus/VPN/proxy tools): ' + (($names.Keys | Sort-Object) -join ', '))
+        WL (Run 'netsh advfirewall show allprofiles state') 'Firewall   : '
+        # TLS settings
+        try {
+            $ie = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction Stop).SecureProtocols
+            W ('IE/WinINET SecureProtocols = ' + $ie + '  (2688 = TLS1.0+1.1+1.2, 2560 = TLS1.1+1.2, 128 = SSL3, 160 = SSL3+TLS1.0, 0 or 2688/2728 are normal)')
+        } catch { W 'IE/WinINET SecureProtocols: not set' }
+        $sp = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols'
+        if (Test-Path $sp) {
+            W 'SCHANNEL protocol overrides in registry:'
+            Get-ChildItem $sp -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+                $pr2 = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+                if ($pr2 -and ($pr2.Enabled -ne $null -or $pr2.DisabledByDefault -ne $null)) { W ('   ' + ($_.Name -replace '.*Protocols\\', '') + ': Enabled=' + $pr2.Enabled + ' DisabledByDefault=' + $pr2.DisabledByDefault) }
+            }
+        } else { W 'SCHANNEL protocol overrides: none (Windows defaults; Win7 defaults to TLS1.0 only for system TLS clients)' }
+        # Root certs
+        try {
+            $st = New-Object System.Security.Cryptography.X509Certificates.X509Store -ArgumentList 'Root', 'LocalMachine'
+            $st.Open('ReadOnly'); $roots = @($st.Certificates); $st.Close()
+            W ('Trusted root certificates (LocalMachine): ' + $roots.Count)
+            $want = @{ 'GlobalSign Root CA' = 0; 'ISRG Root X1' = 0; 'ISRG Root X2' = 0; 'DigiCert Global Root G2' = 0; 'DigiCert Global Root CA' = 0; 'Baltimore CyberTrust Root' = 0; 'GTS Root R1' = 0; 'GTS Root R4' = 0; 'USERTrust RSA Certification Authority' = 0 }
+            foreach ($rc in $roots) { foreach ($wk in @($want.Keys)) { if ($rc.Subject -match [regex]::Escape($wk)) { $want[$wk] = 1 } } }
+            foreach ($wk in ($want.Keys | Sort-Object)) { W ('   ' + $wk + ': ' + $(if ($want[$wk]) { 'present' } else { 'MISSING' })) }
+            $ru = @($roots | Where-Object { $_.Subject -match 'Russian|Minifest|Ministry|\.ru' })
+            foreach ($rr in $ru) { W ('   NOTE Russian/state root certificate installed: ' + $rr.Subject) }
+            $exp = @($roots | Where-Object { $_.NotAfter -lt (Get-Date) })
+            W ('   expired roots in store: ' + $exp.Count)
+            $script:RootDump = $roots
+        } catch { W ('Root store read failed: ' + $_.Exception.Message) }
+    } else { W '(not Windows: Windows-specific checks skipped)' }
+}
+
+Section 'B. Network configuration, proxy, hosts file' {
+    $script:SysDns = @()
+    if ($script:IsWin) {
+        try {
+            Get-WmiObject Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' | ForEach-Object {
+                W ('Adapter: ' + $_.Description)
+                W ('   IP: ' + ($_.IPAddress -join ', ') + ' | gateway: ' + ($_.DefaultIPGateway -join ', ') + ' | DHCP: ' + $_.DHCPEnabled + ' ' + $_.DHCPServer)
+                W ('   DNS: ' + ($_.DNSServerSearchOrder -join ', '))
+                foreach ($d in $_.DNSServerSearchOrder) { if ($d -match '^\d+\.\d+\.\d+\.\d+$' -and $script:SysDns -notcontains $d) { $script:SysDns += $d } }
+            }
+        } catch { W ('adapter query failed: ' + $_.Exception.Message) }
+        WL (Run 'netsh interface ipv4 show subinterfaces') 'MTU  | '
+        $reg = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction SilentlyContinue
+        W ('WinINET proxy (what Chrome uses): enabled=' + $reg.ProxyEnable + ' server=' + $reg.ProxyServer + ' pac=' + $reg.AutoConfigURL + ' autodetect=' + $reg.AutoDetect)
+        if ($reg.ProxyEnable -eq 1 -or $reg.AutoConfigURL) { Flag 'A proxy / PAC script is configured in Windows: all browser traffic goes through it, not directly to the internet.' }
+        WL (Run 'netsh winhttp show proxy') 'WinHTTP: '
+        foreach ($ev in 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY') { $vv = [Environment]::GetEnvironmentVariable($ev); if ($vv) { W ('env ' + $ev + ' = ' + $vv) } }
+        try {
+            $hp = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+            $hl = @(Get-Content $hp -ErrorAction Stop | Where-Object { $_.Trim() -and -not $_.Trim().StartsWith('#') })
+            W ('hosts file: ' + $hl.Count + ' active entries')
+            foreach ($l in ($hl | Select-Object -First 25)) { W ('   ' + $l) }
+            $bad = @($hl | Where-Object { $_ -match 'workers\.dev|cloudflare|atomconnect' })
+            if ($bad.Count) { Flag ('hosts file overrides our domains: ' + ($bad -join ' | ')) }
+        } catch { W 'hosts file: unreadable' }
+    }
+}
+
+# ---------------------------------------------------------------------------------------------------
+$script:Hosts = @{}
+Section 'C. DNS (Windows resolver vs. direct queries to public resolvers)' {
+    $names = @($ClientHost, $SigHost, 'turn.cloudflare.com', 'stun.cloudflare.com', 'speed.cloudflare.com', 'www.google.com', 'ya.ru', 'archive.ubuntu.com', 'mirror.yandex.ru', 'ctldl.windowsupdate.com')
+    foreach ($n in $names) {
+        $sys = @(); $sys6 = @(); $err = ''
+        $stw = [System.Diagnostics.Stopwatch]::StartNew()
+        try { foreach ($a in [System.Net.Dns]::GetHostAddresses($n)) { if ($a.AddressFamily -eq 'InterNetwork') { $sys += $a.IPAddressToString } else { $sys6 += $a.IPAddressToString } } } catch { $err = ErrT $_ }
+        $ms = $stw.ElapsedMilliseconds
+        $pub = Dns-Query '1.1.1.1' $n 1 $false 2500
+        if (-not $pub.Ok -or $pub.A.Count -eq 0) { $pub = Dns-Query '8.8.8.8' $n 1 $false 2500 }
+        $e = @{ Sys = $sys; Sys6 = $sys6; Pub = @($pub.A); Use = @() }
+        $cfHost = ($n -match 'cloudflare|workers\.dev')
+        $sysBad = $false
+        foreach ($i in $sys) { if (IsBogus $i) { $sysBad = $true }; if ($cfHost -and -not (IsCf $i)) { $sysBad = $true } }
+        if ($sys.Count -gt 0 -and -not $sysBad) { $e.Use = $sys } elseif ($pub.A.Count -gt 0) { $e.Use = @($pub.A) } else { $e.Use = $sys }
+        $script:Hosts[$n] = $e
+        W ($n + ':')
+        if ($err) { W ('   Windows resolver: FAILED ' + $err + ' (' + $ms + ' ms)') 'Red' } else { W ('   Windows resolver: ' + (($sys | ForEach-Object { $_ + ' [' + (IpTag $_) + ']' }) -join ', ') + $(if ($sys6.Count) { '  | IPv6: ' + ($sys6 -join ', ') } else { '' }) + '  (' + $ms + ' ms)') }
+        W ('   direct 1.1.1.1/8.8.8.8: ' + (($pub.A | ForEach-Object { $_ + ' [' + (IpTag $_) + ']' }) -join ', ') + $(if (-not $pub.Ok) { ' (no answer: ' + $pub.Err + ')' } else { '' }))
+        if ($sysBad) { Flag ('Windows DNS answer for ' + $n + ' looks wrong (' + ($sys -join ', ') + '): possible DNS spoofing/blocking by ISP or a local filter.') }
+        if ($err -and $pub.A.Count -gt 0) { Flag ('Windows cannot resolve ' + $n + ' but a public resolver can: local/ISP DNS is blocking or broken.') }
+    }
+    W ''
+    W 'Per-resolver comparison for the AtomConnect hosts (UDP port 53, direct):'
+    $resolvers = @()
+    foreach ($d in $script:SysDns) { $resolvers += ,@($d, 'your configured DNS') }
+    $resolvers += ,@('1.1.1.1', 'Cloudflare'); $resolvers += ,@('8.8.8.8', 'Google'); $resolvers += ,@('77.88.8.8', 'Yandex'); $resolvers += ,@('9.9.9.9', 'Quad9')
+    foreach ($rv in $resolvers) {
+        foreach ($n in $ClientHost, $SigHost) {
+            $q = Dns-Query $rv[0] $n 1 $false 2500
+            $res = if ($q.Ok) { 'rcode ' + $q.Rcode + ': ' + (($q.A | ForEach-Object { $_ + ' [' + (IpTag $_) + ']' }) -join ', ') } else { 'NO ANSWER (' + $q.Err + ')' }
+            W ('   @' + $rv[0] + ' (' + $rv[1] + ') ' + $n.Split('.')[0] + ': ' + $res + ' (' + $q.Ms + ' ms)')
+        }
+    }
+    $qt = Dns-Query '1.1.1.1' $ClientHost 1 $true 3000
+    W ('   @1.1.1.1 over TCP/53: ' + $(if ($qt.Ok) { ($qt.A -join ', ') } else { 'NO ANSWER (' + $qt.Err + ')' }))
+    # hijack canaries
+    $can = Dns-Query '192.0.2.53' 'www.google.com' 1 $false 2500
+    if ($can.Ok) { Flag ('DNS HIJACKING: a query sent to 192.0.2.53 (an address where no DNS server exists) was answered (' + ($can.A -join ', ') + '). Something on this network (ISP, router, VPN or security software) transparently intercepts all DNS traffic, so the DNS server shown in settings is not the one really answering.') } else { W '   canary query to non-existent resolver 192.0.2.53: no answer (good, DNS is not transparently intercepted)' }
+    $nx = 'acdiag-' + $script:rng.Next(100000, 999999) + '.example.com'
+    $nq = $null; try { $nq = [System.Net.Dns]::GetHostAddresses($nx) } catch { }
+    if ($nq) { Flag ('Windows resolver returns an address for a non-existent name (' + $nx + ' -> ' + ($nq -join ', ') + '): DNS NXDOMAIN hijacking by ISP/router.') } else { W '   non-existent name correctly fails to resolve' }
+    $aaaa = $script:Hosts[$ClientHost].Sys6
+    W ('   IPv6 (AAAA) addresses for client host from Windows resolver: ' + $(if ($aaaa.Count) { $aaaa -join ', ' } else { 'none' }))
+}
+
+# ---------------------------------------------------------------------------------------------------
+function Pick([string]$n) { $e = $script:Hosts[$n]; if ($e -and $e.Use.Count -gt 0) { return @($e.Use) }; return @() }
+$ipC = ''; $ipS = ''; $ipT = ''; $ipSpeed = ''; $ipG = ''; $ipY = ''; $ipU = ''; $ipM = ''; $ipMs = ''
+$x = @(Pick $ClientHost); if ($x.Count) { $ipC = $x[0] }
+$x = @(Pick $SigHost); if ($x.Count) { $ipS = $x[0] }
+$x = @(Pick 'turn.cloudflare.com'); if ($x.Count) { $ipT = $x[0] }
+$x = @(Pick 'speed.cloudflare.com'); if ($x.Count) { $ipSpeed = $x[0] }
+$x = @(Pick 'www.google.com'); if ($x.Count) { $ipG = $x[0] }
+$x = @(Pick 'ya.ru'); if ($x.Count) { $ipY = $x[0] }
+$x = @(Pick 'archive.ubuntu.com'); if ($x.Count) { $ipU = $x[0] }
+$x = @(Pick 'mirror.yandex.ru'); if ($x.Count) { $ipM = $x[0] }
+$x = @(Pick 'ctldl.windowsupdate.com'); if ($x.Count) { $ipMs = $x[0] }
+
+Section 'D. ICMP ping, path MTU, route' {
+    if (-not $script:IsWin) { W '(Windows only)'; return }
+    foreach ($t in @(@('AtomConnect client IP', $ipC), @('AtomConnect signaling IP', $ipS), @('1.1.1.1', '1.1.1.1'), @('Google', $ipG), @('Yandex ya.ru', $ipY))) {
+        if (-not $t[1]) { continue }
+        $o = Run ('ping -n 4 -w 1500 ' + $t[1])
+        $m = [regex]::Matches($o, 'TTL=\d+')
+        W ('ping ' + $t[0] + ' ' + $t[1] + ': ' + $m.Count + '/4 replies' + $(if ($m.Count) { ' (' + $m[0].Value + ')' } else { '' }))
+    }
+    if ($ipC) {
+        $okSize = 0
+        foreach ($sz in 1472, 1452, 1400, 1300, 1200, 1000) {
+            $o = Run ('ping -n 1 -w 1500 -f -l ' + $sz + ' ' + $ipC)
+            if ($o -match 'TTL=\d+') { $okSize = $sz; break }
+        }
+        if ($okSize -gt 0) { W ('path MTU to client IP (DF ping): payload ' + $okSize + ' passes => MTU about ' + ($okSize + 28)); if ($okSize -lt 1400) { Flag ('Path MTU is low (' + ($okSize + 28) + '): large packets get lost, which can make big downloads/TLS handshakes hang (PPPoE/VPN/tunnel MTU problem).') } }
+        else { W 'path MTU: DF pings got no reply at any size (ICMP blocked or no reply; inconclusive)' }
+        if (-not $script:Quick) {
+            W ('tracert to ' + $ipC + ' (max 12 hops, may take up to 30 s):')
+            WL (Run ('tracert -d -h 12 -w 800 ' + $ipC)) '   '
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------------------------------
+Section 'E. TCP connect (port 443 / 80)' {
+    $ok443 = @{}
+    $targets = @(
+        @('client host', $ClientHost, 443), @('client host', $ClientHost, 80), @('signaling host', $SigHost, 443), @('signaling host', $SigHost, 80),
+        @('speed.cloudflare.com', 'speed.cloudflare.com', 443), @('turn.cloudflare.com', 'turn.cloudflare.com', 443), @('turn.cloudflare.com', 'turn.cloudflare.com', 3478), @('turn.cloudflare.com', 'turn.cloudflare.com', 80),
+        @('Google', 'www.google.com', 443), @('Yandex', 'ya.ru', 443), @('Ubuntu mirror', 'archive.ubuntu.com', 80), @('Yandex mirror', 'mirror.yandex.ru', 80))
+    foreach ($t in $targets) {
+        $ips = @(Pick $t[1]) | Select-Object -First 2
+        if (-not $ips) { W ('   ' + $t[0] + ' ' + $t[1] + ':' + $t[2] + ' - no IP address to test'); continue }
+        foreach ($ip in $ips) {
+            $c = Tcp-Connect $ip $t[2] 6000 $false
+            if ($c.Ok) { W ('   [ OK ] ' + $t[0] + ' ' + $ip + ':' + $t[2] + ' [' + (IpTag $ip) + '] connected in ' + $c.Ms + ' ms'); try { $c.Client.Close() } catch { } }
+            else { W ('   [FAIL] ' + $t[0] + ' ' + $ip + ':' + $t[2] + ' [' + (IpTag $ip) + ']: ' + $c.Err + ' (' + $c.Ms + ' ms)') 'Red' }
+            if ($t[2] -eq 443) { $k = $t[1]; if (-not $ok443.ContainsKey($k)) { $ok443[$k] = 0 }; if ($c.Ok) { $ok443[$k] = $ok443[$k] + 1 } }
+        }
+    }
+    foreach ($k in $ClientHost, $SigHost) { if ($ok443.ContainsKey($k) -and $ok443[$k] -eq 0) { if ($ok443['www.google.com'] -gt 0 -or $ok443['ya.ru'] -gt 0) { Flag ('TCP to ' + $k + ' port 443 fails while Google/Yandex work: the Cloudflare address is blocked or throttled on this connection (ISP/firewall level).') } else { Flag ('TCP to ' + $k + ':443 fails and so do the controls: general internet/firewall problem.') } } }
+    $a6 = $script:Hosts[$ClientHost].Sys6
+    if ($a6.Count) {
+        $c6 = Tcp-Connect $a6[0] 443 5000 $true
+        W ('   IPv6 ' + $a6[0] + ':443: ' + $(if ($c6.Ok) { 'connected in ' + $c6.Ms + ' ms' } else { 'FAIL ' + $c6.Err }))
+        if ($c6.Ok) { try { $c6.Client.Close() } catch { } }
+        W '   (if IPv6 is advertised in DNS but broken, browsers can stall for seconds before falling back to IPv4)'
+    }
+}
+
+# ---------------------------------------------------------------------------------------------------
+Section 'F. TLS handshake probes (raw ClientHello; shows if the ISP filters by SNI / drops TLS)' {
+    W 'Each line sends a TLS ClientHello that looks like a browser and waits for the ServerHello. RST/TIMEOUT only for some SNI names'
+    W 'on the SAME IP means SNI-based DPI filtering; failure for every name on Cloudflare IPs but OK on Google/Yandex = Cloudflare filtered.'
+    $res = @{}
+    $do = {
+        param($lab, $ip, $port, $sni, $mode)
+        if (-not $ip) { W ('   [skip] ' + $lab + ': no IP'); return }
+        $p = Tls-Probe $ip $port $sni $mode 6000
+        $col = $null; if ($p.Status -ne 'OK' -and $p.Status -ne 'ALRT') { $col = 'Red' }
+        W ('   [' + $p.Status.PadRight(4) + '] ' + $lab + ' ' + $ip + ':' + $port + ' sni=' + $(if ($sni) { $sni } else { '(none)' }) + ' ' + $mode + ' -> ' + $p.Detail) $col
+        $res[$lab + '|' + $mode] = $p
+        return $p
+    }
+    [void](& $do 'client/own-sni' $ipC 443 $ClientHost 'tls13')
+    $p12 = & $do 'client/own-sni' $ipC 443 $ClientHost 'tls12'
+    [void](& $do 'client/no-sni' $ipC 443 '' 'tls13')
+    [void](& $do 'client/sni=www.cloudflare.com' $ipC 443 'www.cloudflare.com' 'tls13')
+    [void](& $do 'client/sni=example.com' $ipC 443 'example.com' 'tls13')
+    [void](& $do 'client/sni=signaling' $ipC 443 $SigHost 'tls13')
+    [void](& $do 'signaling/own-sni' $ipS 443 $SigHost 'tls13')
+    $ps12 = & $do 'signaling/own-sni' $ipS 443 $SigHost 'tls12'
+    [void](& $do 'speed.cloudflare.com' $ipSpeed 443 'speed.cloudflare.com' 'tls13')
+    [void](& $do 'turn.cloudflare.com:443' $ipT 443 'turn.cloudflare.com' 'tls13')
+    [void](& $do 'turn.cloudflare.com:5349' $ipT 5349 'turn.cloudflare.com' 'tls13')
+    [void](& $do 'control Google' $ipG 443 'www.google.com' 'tls13')
+    [void](& $do 'control Yandex' $ipY 443 'ya.ru' 'tls13')
+    # interpretation
+    $own = $res['client/own-sni|tls13']; $nos = $res['client/no-sni|tls13']; $oth = $res['client/sni=www.cloudflare.com|tls13']; $gg = $res['control Google|tls13']
+    $ans = { param($q) ($q -and ($q.Status -eq 'OK' -or $q.Status -eq 'ALRT')) }
+    if ($own -and -not (& $ans $own)) {
+        if ((& $ans $nos) -or (& $ans $oth)) { Flag ('SNI FILTERING: handshake to ' + $ipC + ' fails (' + $own.Status + ') when the name is ' + $ClientHost + ' but works with another/no name. The ISP blocks by TLS server name.') }
+        elseif (& $ans $gg) { Flag ('TLS to Cloudflare address ' + $ipC + ' fails (' + $own.Status + ') for every server name while Google works: the Cloudflare IP itself is blocked or TLS to it is dropped.') }
+        else { Flag 'TLS handshakes fail everywhere, including controls: general TLS blocking, firewall or antivirus.' }
+    }
+    foreach ($pp in @($p12, $ps12)) { if ($pp -and $pp.Parsed -and $pp.Parsed.Certs.Count) { W ''; W 'Certificate chain presented over TLS 1.2 (captured from raw handshake):'; Cert-Report $pp.Parsed.Certs '   '; break } }
+}
+
+# ---------------------------------------------------------------------------------------------------
+Section 'G. Plain HTTP (port 80) transfers: do large responses stall?' {
+    W 'Port 80 needs no TLS, so this works even on very old Windows. Responses of many sizes are downloaded and the byte count at'
+    W 'which data stops arriving (if it does) is reported. A cut-off near 15-20 KB on Cloudflare but not on controls = ISP throttling.'
+    if (-not $ipC) { W '  no IP for client host'; return }
+    $tests = @(
+        @('client /version.json (45 B)', $ipC, $ClientHost, '/version.json', 100000, '"version"'),
+        @('client /favicon.svg (0.6 KB)', $ipC, $ClientHost, '/favicon.svg', 100000, '<svg'),
+        @('client /admin (admin page, 32 KB)', $ipC, $ClientHost, '/admin', 100000, '<'),
+        @('client / (the app itself, 72 KB)', $ipC, $ClientHost, '/', 200000, 'AtomConnect'),
+        @('signaling /ice (0.5 KB)', $ipS, $SigHost, '/ice', 100000, 'iceServers'),
+        @('Cloudflare speed 20 KB', $ipSpeed, 'speed.cloudflare.com', '/__down?bytes=20000', 100000, ''),
+        @('Cloudflare speed 100 KB', $ipSpeed, 'speed.cloudflare.com', '/__down?bytes=100000', 200000, ''),
+        @('Cloudflare speed 300 KB', $ipSpeed, 'speed.cloudflare.com', '/__down?bytes=300000', 400000, ''),
+        @('control Microsoft root-certificate list (Windows auto-update of trusted roots)', $ipMs, 'ctldl.windowsupdate.com', '/msdownload/update/v3/static/trustedr/en/authrootstl.cab', 20000, ''),
+        @('control Ubuntu mirror 300 KB (non-Cloudflare)', $ipU, 'archive.ubuntu.com', '/ubuntu/ls-lR.gz', 300000, ''),
+        @('control Yandex mirror 300 KB (Russian host)', $ipM, 'mirror.yandex.ru', '/debian/ls-lR.gz', 300000, ''))
+    foreach ($t in $tests) {
+        if (-not $t[1]) { W ('  [skip] ' + $t[0] + ': no IP'); continue }
+        $r = Http-Get $t[1] 80 $t[2] $t[3] $false $t[4] 7000 25000 $t[5]
+        Http-Line ($t[0] + ' @' + $t[1]) $r 0
+        if ($r.Outcome -eq 'STALL' -or $r.Outcome -eq 'EOF-EARLY' -or $r.Outcome -eq 'RST') { Flag ($t[0] + ': transfer broke after ' + $r.Body + ' body bytes (' + $r.Outcome + '). Compare with the controls to tell ISP throttling from local problems.') }
+        if ($r.Outcome -match 'UNEXPECTED') { Flag ($t[0] + ': the response is not what the server sends (possible injected/block page or transparent proxy). Snippet: ' + $r.Snippet) }
+    }
+    if ($script:ServerDates.Count) {
+        try {
+            $sd = [DateTime]::Parse($script:ServerDates[0], [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor [System.Globalization.DateTimeStyles]::AssumeUniversal)
+            $skew = ((Get-Date).ToUniversalTime() - $sd).TotalSeconds
+            W ('  clock check: this PC is ' + [math]::Round($skew) + ' s ahead of (+) / behind (-) the server clock')
+            if ([math]::Abs($skew) -gt 300) { Flag ('The Windows clock is off by ' + [math]::Round($skew / 60) + ' minutes: this breaks HTTPS certificate validation. Fix date/time/timezone first.') }
+        } catch { }
+    }
+}
+
+# ---------------------------------------------------------------------------------------------------
+Section 'H. HTTPS and WebSocket through the Windows TLS stack' {
+    if (-not $ipC) { W '  no IP for client host'; return }
+    # capability check
+    W ('PowerShell/.NET TLS capability test (this is NOT the browser; browsers use their own TLS):')
+    foreach ($pr in 3072, 240) {
+        $o = Ssl-Open $ipC 443 $ClientHost $pr
+        W ('   protocol flags ' + $pr + ' (' + $(if ($pr -eq 3072) { 'TLS1.2' } else { 'Windows default' }) + '): ' + $(if ($o.Ok) { 'OK, negotiated ' + $o.Proto + ' in ' + $o.Ms + ' ms' } else { 'FAILED ' + $o.Err }))
+        if ($o.Ok) { $script:TlsProto = $pr; try { $o.Stream.Close(); $o.Client.Close() } catch { }; if ($o.Cert) { W ('   server certificate seen by Windows TLS: ' + $o.Cert.Subject + ' issued by ' + $o.Cert.Issuer); if ($o.SslErr -and $o.SslErr -ne 'None') { Flag ('Windows TLS certificate validation reported: ' + $o.SslErr) } }; break }
+    }
+    if ($script:TlsProto -eq $null) {
+        W '   Windows TLS from PowerShell cannot complete a handshake with Cloudflare (old .NET/SChannel without TLS 1.2).'
+        W '   That is expected on an unpatched Windows 7 and says nothing about Chrome. HTTPS/WSS/TURNS tests skipped; see sections F and I.'
+        W '   Compare with section F: if the raw handshake works there, the network is fine and only this Windows component is old.'
+    } else {
+        $tests = @(
+            @('HTTPS client /version.json', $ipC, $ClientHost, '/version.json', 100000, '"version"'),
+            @('HTTPS client / (the app itself, 72 KB)', $ipC, $ClientHost, '/', 200000, 'AtomConnect'),
+            @('HTTPS signaling /ice', $ipS, $SigHost, '/ice', 100000, 'iceServers'),
+            @('HTTPS Cloudflare speed 100 KB', $ipSpeed, 'speed.cloudflare.com', '/__down?bytes=100000', 200000, ''),
+            @('HTTPS Cloudflare speed 300 KB', $ipSpeed, 'speed.cloudflare.com', '/__down?bytes=300000', 400000, ''),
+            @('HTTPS control Google /', $ipG, 'www.google.com', '/', 100000, ''))
+        foreach ($t in $tests) {
+            if (-not $t[1]) { W ('  [skip] ' + $t[0]); continue }
+            $r = Http-Get $t[1] 443 $t[2] $t[3] $true $t[4] 7000 25000 $t[5]
+            Http-Line ($t[0] + ' @' + $t[1]) $r 0
+            if ($r.Outcome -eq 'STALL' -or $r.Outcome -eq 'EOF-EARLY' -or $r.Outcome -eq 'RST') { Flag ($t[0] + ': HTTPS transfer broke after ' + $r.Body + ' body bytes (' + $r.Outcome + ').') }
+            if ($r.Outcome -match 'UNEXPECTED') { Flag ($t[0] + ': unexpected content over HTTPS (interception?). Snippet: ' + $r.Snippet) }
+        }
+    }
+    W ''
+    W 'WebSocket (the signaling channel the app needs; creates a short-lived test room named zzdiagNNNNNN):'
+    if ($ipS) {
+        Ws-Test 'ws://  (port 80, plain)' $ipS 80 $false $SigHost
+        if ($script:TlsProto -ne $null) { Ws-Test 'wss:// (port 443, TLS)' $ipS 443 $true $SigHost } else { W '   wss:// skipped (no Windows TLS 1.2). The browser capture in section J tests the real thing.' }
+    }
+}
+
+# ---------------------------------------------------------------------------------------------------
+Section 'I. WebRTC network path: STUN / TURN over UDP and TCP' {
+    W 'The app needs UDP (direct/STUN) or at least one working TURN relay transport. Ports/protocols are those the app itself uses.'
+    $user = ''; $pass = ''
+    if ($ipS) {
+        $r = $null
+        if ($script:TlsProto -ne $null) { $r = Http-Get $ipS 443 $SigHost '/ice' $true 20000 7000 15000 'iceServers'; if ($r.Outcome -ne 'COMPLETE' -or $r.Tls -match 'cert errors') { $r = $null } }
+        if (-not $r) { $r = Http-Get $ipS 80 $SigHost '/ice' $false 20000 7000 15000 'iceServers' }
+        if ($r.Outcome -eq 'COMPLETE' -and $r.Text -match '"username":"([^"]+)"') {
+            $user = $matches[1]; if ($r.Text -match '"credential":"([^"]+)"') { $pass = $matches[1] }
+            W ('   fetched ICE configuration from /ice (' + $(if ($r.Tls) { 'HTTPS' } else { 'plain HTTP' }) + '); credentials are short-lived and are not written to this report')
+            W ('   ICE URLs: ' + ((([regex]::Matches($r.Text, '"((?:stun|turn|turns):[^"]+)"')) | ForEach-Object { $_.Groups[1].Value }) -join '  '))
+        } else { W ('   /ice fetch failed (' + $r.Outcome + '): TURN allocation test will be skipped; only server reachability is tested') }
+    }
+    $stunIp = @(Pick 'stun.cloudflare.com'); $turnIp = @(Pick 'turn.cloudflare.com')
+    $udpOk = $false
+    if ($stunIp.Count) {
+        if (Stun-Test 'STUN cloudflare' 'udp' $stunIp[0] 3478 '') { $udpOk = $true }
+        if (Stun-Test 'STUN cloudflare' 'udp' $stunIp[0] 443 '') { $udpOk = $true }
+    } else { W '   no IP for stun.cloudflare.com' }
+    $gs = $null; try { $gs = [System.Net.Dns]::GetHostAddresses('stun.l.google.com') | Where-Object { $_.AddressFamily -eq 'InterNetwork' } | Select-Object -First 1 } catch { }
+    if ($gs) { if (Stun-Test 'STUN google (control)' 'udp' $gs.IPAddressToString 19302 '') { $udpOk = $true } }
+    if (-not $udpOk) { Flag 'No UDP STUN reply from anywhere: outbound UDP is blocked or filtered on this connection. Direct P2P will not work; calls depend on TURN over TCP/TLS.' }
+    if ($turnIp.Count) {
+        $ti = $turnIp[0]
+        $turnOk = @{}
+        foreach ($t in @(@('udp', 3478), @('tcp', 3478), @('tls', 5349), @('udp', 443), @('tcp', 80), @('tls', 443))) {
+            if ($t[0] -eq 'tls' -and $script:TlsProto -eq $null) {
+                $p = Tls-Probe $ti $t[1] 'turn.cloudflare.com' 'tls13' 6000
+                W ('  [' + $p.Status.PadRight(4) + '] TURN tls ' + $ti + ':' + $t[1] + ' (raw TLS hello only; no Windows TLS 1.2 for a full test): ' + $p.Detail)
+                $turnOk[$t[0] + $t[1]] = ($p.Status -eq 'OK')
+                continue
+            }
+            $turnOk[$t[0] + $t[1]] = (Turn-Test 'TURN' $t[0] $ti $t[1] 'turn.cloudflare.com' $user $pass)
+        }
+        $any = $false; foreach ($k in $turnOk.Keys) { if ($turnOk[$k]) { $any = $true } }
+        if (-not $any) { Flag 'No TURN transport works: calls cannot be relayed from this network.' }
+        elseif (-not ($turnOk['tcp80'] -or $turnOk['tls443'] -or $turnOk['tcp3478'] -or $turnOk['tls5349']) ) { Flag 'Only UDP TURN works; if UDP is later filtered, calls will fail (no TCP/TLS fallback).' }
+    } else { W '   no IP for turn.cloudflare.com' }
+}
+
+# ---------------------------------------------------------------------------------------------------
+Section 'J. Browser capture (Chrome network log of the real app)' {
+    if (-not $script:IsWin) { W '(Windows only)'; return }
+    if ($script:Quick) { W '(skipped in quick mode)'; return }
+    if (-not $script:ChromePath) { W 'Chrome was not found, skipping. (If you use another browser tell the developer which one.)'; return }
+    W 'This opens Chrome in a temporary clean profile with network logging, on the AtomConnect debug page.'
+    W 'Steps: 1) wait until the text box on the page says "--- done ---" (up to ~40 s)  2) click "Select all", then press Ctrl+C'
+    W '       3) come back to this window and press Enter. Notepad opens: paste (Ctrl+V), save (Ctrl+S), close Notepad.'
+    $ans = Read-Host 'Run the browser capture now? (Y/n)'
+    if ($ans -match '^[nN]') { W 'skipped by user'; return }
+    $log = Join-Path $script:OutDir ('AtomConnect-netlog-' + $script:Stamp + '.json')
+    $prof = Join-Path $env:TEMP ('acdiag-profile-' + $script:Stamp)
+    $args2 = '--user-data-dir="' + $prof + '" --log-net-log="' + $log + '" --net-log-capture-mode=Default --no-first-run --no-default-browser-check --disable-extensions --disable-background-mode "https://' + $ClientHost + '/debug.html?nc=' + $script:rng.Next(1000, 9999) + '"'
+    $pr = Start-Process -FilePath $script:ChromePath -ArgumentList $args2 -PassThru
+    [void](Read-Host 'Press Enter here AFTER you copied the text from the Chrome page')
+    $paste = Join-Path $script:OutDir ('AtomConnect-browser-text-' + $script:Stamp + '.txt')
+    $ph = 'PASTE THE TEXT FROM THE CHROME PAGE BELOW THIS LINE (Ctrl+V), THEN SAVE (Ctrl+S) AND CLOSE NOTEPAD.'
+    try {
+        [System.IO.File]::WriteAllText($paste, $ph + "`r`n")
+        Start-Process -FilePath 'notepad.exe' -ArgumentList ('"' + $paste + '"') -Wait
+        $pt = [System.IO.File]::ReadAllText($paste).Replace($ph, '').Trim()
+        if ($pt.Length -gt 20) { W ''; W '--- text pasted from the debug page in Chrome ---'; WL $pt '   '; W '--- end of pasted text ---' }
+        else { W 'No text was pasted. That is OK, the network log still helps.' }
+        Remove-Item $paste -Force -ErrorAction SilentlyContinue
+    } catch { W ('paste step failed: ' + $_.Exception.Message) }
+    try {
+        if (-not $pr.HasExited) { [void]$pr.CloseMainWindow(); [void]$pr.WaitForExit(10000) }
+        if (-not $pr.HasExited) { [void](Read-Host 'Chrome is still open: please close it completely, then press Enter') }
+    } catch { }
+    Start-Sleep -Milliseconds 800
+    if (Test-Path $log) {
+        $sz = (Get-Item $log).Length
+        W ('network log: ' + $log + ' (' + [math]::Round($sz / 1024) + ' KB)')
+        try {
+            $txt = [System.IO.File]::ReadAllText($log)
+            $names = @{ '-2' = 'FAILED'; '-3' = 'ABORTED'; '-7' = 'TIMED_OUT'; '-21' = 'NETWORK_CHANGED'; '-100' = 'CONNECTION_CLOSED'; '-101' = 'CONNECTION_RESET'; '-102' = 'CONNECTION_REFUSED'; '-103' = 'CONNECTION_ABORTED'; '-104' = 'CONNECTION_FAILED'; '-105' = 'NAME_NOT_RESOLVED'; '-106' = 'INTERNET_DISCONNECTED'; '-107' = 'SSL_PROTOCOL_ERROR'; '-109' = 'ADDRESS_UNREACHABLE'; '-111' = 'TUNNEL_CONNECTION_FAILED'; '-113' = 'SSL_VERSION_OR_CIPHER_MISMATCH'; '-118' = 'CONNECTION_TIMED_OUT'; '-130' = 'PROXY_CONNECTION_FAILED'; '-200' = 'CERT_COMMON_NAME_INVALID'; '-201' = 'CERT_DATE_INVALID'; '-202' = 'CERT_AUTHORITY_INVALID'; '-324' = 'EMPTY_RESPONSE'; '-501' = 'INSECURE_RESPONSE' }
+            $cnt = @{}
+            foreach ($m in [regex]::Matches($txt, '"(?:net_error|error_code|net_error_code)"\s*:\s*(-\d+)')) { $k = $m.Groups[1].Value; if ($cnt.ContainsKey($k)) { $cnt[$k] = $cnt[$k] + 1 } else { $cnt[$k] = 1 } }
+            W ('network errors recorded by Chrome (code: count):')
+            if ($cnt.Count -eq 0) { W '   none' } else { foreach ($k in ($cnt.Keys | Sort-Object)) { W ('   ' + $k + ' ' + $(if ($names.ContainsKey($k)) { $names[$k] } else { '' }) + ': ' + $cnt[$k]) } }
+            W ('QUIC/HTTP3 mentions in log: ' + ([regex]::Matches($txt, 'QUIC_')).Count)
+        } catch { W ('could not summarize network log: ' + $_.Exception.Message) }
+        try {
+            $cab = [System.IO.Path]::ChangeExtension($log, '.cab')
+            & makecab.exe $log $cab | Out-Null
+            if (Test-Path $cab) { Remove-Item $log -Force; $script:NetlogOut = $cab; W ('compressed network log: ' + $cab) } else { $script:NetlogOut = $log }
+        } catch { $script:NetlogOut = $log }
+    } else { W 'No network log was produced (Chrome may have refused the flag).' }
+    try { Remove-Item $prof -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+}
+
+# ---------------------------------------------------------------------------------------------------
+Section 'Z. Appendix: trusted root certificates (names only)' {
+    if ($script:RootDump) { foreach ($rc in ($script:RootDump | Sort-Object Subject)) { W ('   ' + ($rc.Subject -replace '\s+', ' ') + '  [exp ' + $rc.NotAfter.ToString('yyyy-MM') + ']') } } else { W '(not collected)' }
+}
+
+Hdr 'SUMMARY OF AUTOMATIC FINDINGS'
+if ($script:Flags.Count -eq 0) { W 'No obvious problem was detected by the automatic checks. The report is still useful: send it.' 'Green' }
+else { $i = 1; foreach ($f in $script:Flags) { W (('{0}. ' -f $i) + $f) 'Yellow'; $i++ } }
+W ''
+W ('Finished in ' + [math]::Round(((Get-Date) - $script:T0).TotalSeconds) + ' s')
+try { $script:sw.Close() } catch { }
+Write-Host ''
+Write-Host '================================================================' -ForegroundColor Green
+Write-Host ' DONE. Please send these file(s) to the developer:' -ForegroundColor Green
+Write-Host ('   ' + $script:ReportPath) -ForegroundColor Green
+if ($script:NetlogOut) { Write-Host ('   ' + $script:NetlogOut) -ForegroundColor Green }
+Write-Host '================================================================' -ForegroundColor Green
+if ($script:IsWin -and $script:ReportPath) { try { Start-Process explorer.exe -ArgumentList ('/select,"' + $script:ReportPath + '"') } catch { } }
